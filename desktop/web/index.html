@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Novel RAG</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span>Novel RAG</span>
+        </div>
+        <nav id="nav">
+          <button class="nav-item active" data-view="shelf">书架</button>
+          <button class="nav-item" data-view="read">阅读</button>
+          <button class="nav-item" data-view="analysis">分析</button>
+          <button class="nav-item" data-view="settings">设置</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="status" id="backend-status">正在启动本地后端…</div>
+          <div class="hint" id="backend-hint"></div>
+        </div>
+      </aside>
+
+      <main>
+        <!-- 书架 -->
+        <section class="view active" id="view-shelf">
+          <header class="view-head">
+            <h1>书架</h1>
+            <div class="actions">
+              <label class="btn primary">
+                导入小说
+                <input id="file-input" type="file" accept=".txt,text/plain" hidden />
+              </label>
+            </div>
+          </header>
+          <p class="hint">
+            支持 TXT / EPUB 文本文件（自动识别 UTF-8 / GB18030 / UTF-16）。导入后立即在后台建立知识库，
+            期间也能正常阅读与提问。
+          </p>
+          <div id="book-list" class="book-grid"></div>
+        </section>
+
+        <!-- 阅读 -->
+        <section class="view" id="view-read">
+          <header class="view-head compact">
+            <div class="reader-title">
+              <strong id="reader-title">未选择书籍</strong>
+              <span class="hint" id="reader-progress"></span>
+            </div>
+            <div class="actions">
+              <select id="toc-select" class="select" title="目录"></select>
+              <button class="btn" id="btn-prev">上一章</button>
+              <button class="btn" id="btn-next">下一章</button>
+              <button class="btn" id="btn-highlight">保存划线</button>
+            </div>
+          </header>
+          <div class="reader-wrap">
+            <foliate-view id="viewer"></foliate-view>
+            <div class="reader-empty" id="reader-empty">
+              从书架选一本书开始阅读。分析模式里的引用编号点一下就会跳到这里。
+            </div>
+          </div>
+        </section>
+
+        <!-- 分析 -->
+        <section class="view" id="view-analysis">
+          <header class="view-head">
+            <h1>分析</h1>
+            <div class="actions">
+              <label class="toggle">
+                <input type="checkbox" id="spoiler-guard" checked />
+                <span>防剧透（只检索到当前进度）</span>
+              </label>
+            </div>
+          </header>
+
+          <div class="analysis-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <span>提问</span>
+                <span class="hint" id="coverage-hint"></span>
+              </div>
+              <div class="ask-row">
+                <input id="question" class="input" placeholder="例如：刘备和关羽是什么关系？" />
+                <button class="btn primary" id="btn-ask">提问</button>
+              </div>
+              <div id="answer" class="answer">
+                <span class="hint">提问后会显示带编号引用的回答。</span>
+              </div>
+              <div class="panel-head" style="margin-top: 18px">
+                <span>引用</span>
+                <span class="hint">点击跳转到原文位置</span>
+              </div>
+              <ol id="citations" class="citations"></ol>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <span>任务</span>
+                <span class="hint" id="task-hint"></span>
+              </div>
+              <div class="task-actions">
+                <button class="btn" id="btn-start">开始/继续</button>
+                <button class="btn" id="btn-pause">暂停</button>
+              </div>
+              <div class="progress"><div id="task-bar"></div></div>
+
+              <div class="panel-head" style="margin-top: 18px"><span>关系</span></div>
+              <ul id="relations" class="list"></ul>
+
+              <div class="panel-head" style="margin-top: 14px"><span>时间线</span></div>
+              <ul id="timeline" class="list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- 设置 -->
+        <section class="view" id="view-settings">
+          <header class="view-head">
+            <h1>设置</h1>
+            <div class="actions">
+              <button class="btn" id="btn-settings-reload">重新加载</button>
+            </div>
+          </header>
+
+          <div class="settings-grid">
+            <div class="panel">
+              <div class="panel-head"><span>人名识别</span></div>
+              <select id="set-ner" class="select wide"></select>
+              <p class="hint">
+                jieba 走本地词性标注（CPU、约 5MB 词典），配合「姓X名Y字Z」规则能得到别名对；
+                正则模式零依赖但召回较低。
+              </p>
+
+              <div class="panel-head" style="margin-top: 18px"><span>章节识别</span></div>
+              <select id="set-split" class="select wide"></select>
+              <p class="hint">规则优先，置信度不足时才调 LLM；也可以强制总是用 LLM。</p>
+
+              <div class="panel-head" style="margin-top: 18px"><span>语义检索（embedding）</span></div>
+              <select id="set-embed" class="select wide"></select>
+              <div class="model-row">
+                <span id="embed-status" class="hint"></span>
+                <button class="btn" id="btn-embed-download">下载模型</button>
+              </div>
+              <div class="progress"><div id="embed-bar"></div></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span>推理模型</span></div>
+              <p class="hint" id="llm-config-path"></p>
+              <select id="set-llm-provider" class="select wide"></select>
+              <select id="set-llm-model" class="select wide" style="margin-top: 8px"></select>
+              <p class="hint">
+                直连 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>），
+                抽取与查询共用同一个模型。未配置时退回离线模式：抽取用启发式、问答用原文摘录。
+              </p>
+
+              <div class="panel-head" style="margin-top: 18px"><span>当前生效</span></div>
+              <pre id="effective" class="code"></pre>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span>章节校正</span></div>
+              <p class="hint">
+                识别错了章节边界时，用正则重新分章（例如 <code>^第[一二三四五六七八九十百]+回.*$</code>）。
+                重分会作废该书已有的知识库，并在返回里列出失效条目。
+              </p>
+              <input id="resplit-pattern" class="input wide" placeholder="正则（留空则用内置规则重试）" />
+              <div class="model-row">
+                <span id="resplit-hint" class="hint"></span>
+                <button class="btn" id="btn-resplit">重新分章</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>

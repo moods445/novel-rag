@@ -1,0 +1,25 @@
+[project]
+name = "novel-rag"
+version = "0.1.0"
+description = "AI 小说阅读器：本地优先的小说知识库后端"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# 生产环境建议替换 stdlib http.server
+api = ["fastapi>=0.115", "uvicorn>=0.30"]
+# 真实本地 embedding：BGE-small-zh-v1.5（ONNX）
+# 模型文件：python3 scripts/fetch_embedding_model.py
+embed = ["onnxruntime>=1.16", "tokenizers>=0.15", "numpy>=1.26"]
+# 人名识别（CPU 小模型，词典约 5MB）；不装则自动退回正则
+ner = ["jieba>=0.42"]
+
+[project.scripts]
+novel-rag = "novel_rag.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["novel_rag"]

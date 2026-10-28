@@ -1,0 +1,181 @@
+// 设置平面：模型选择 + 下载进度。所有改动 PUT 后后端热重建，无需重启。
+import { api, escapeHtml } from './api.js';
+
+const els = {};
+let snapshot = null;
+let poll = null;
+
+export function init(refs) {
+  Object.assign(els, refs);
+  els.ner?.addEventListener('change', () => save({ ner_backend: els.ner.value }));
+  els.split?.addEventListener('change', () => save({ split_backend: els.split.value }));
+  els.embed?.addEventListener('change', () => save({ embedding_backend: els.embed.value }));
+  els.llmProvider?.addEventListener('change', () => {
+    const provider = (snapshot?.options?.llm?.providers || []).find((p) => p.name === els.llmProvider.value);
+    const model = provider?.models?.[0] || '';
+    save({ llm_provider: els.llmProvider.value, llm_model: model });
+  });
+  els.llmModel?.addEventListener('change', () => save({ llm_model: els.llmModel.value }));
+  els.download?.addEventListener('click', startDownload);
+  els.resplit?.addEventListener('click', resplitCurrentBook);
+}
+
+export async function load() {
+  const data = await api.get('/api/settings');
+  snapshot = data;
+  fill(data);
+  watchDownload(data);
+}
+
+function fill(data) {
+  const { values = {}, options = {}, embedding = {} } = data;
+
+  fillSelect(els.ner, options.ner_backend, values.ner_backend);
+  fillSelect(els.split, options.split_backend, values.split_backend);
+  fillSelect(els.embed, options.embedding_backend, values.embedding_backend);
+
+  const providers = options.llm?.providers || [];
+  fillSelect(
+    els.llmProvider,
+    providers.map((p) => ({ id: p.name, label: `${p.label}（${p.base_url}）` })),
+    values.llm_provider
+  );
+  const active = providers.find((p) => p.name === values.llm_provider) || providers[0];
+  fillSelect(
+    els.llmModel,
+    (active?.models || []).map((m) => ({ id: m, label: m })),
+    values.llm_model
+  );
+
+  if (els.llmConfigPath) {
+    els.llmConfigPath.textContent = options.llm?.config_path
+      ? `配置来源：${options.llm.config_path}`
+      : '未找到 opencode 配置，当前为离线模式';
+  }
+
+  if (els.embedStatus) {
+    els.embedStatus.textContent = embedding.installed
+      ? `${embedding.model_id} · 已安装 ${embedding.size_mb} MB`
+      : `未安装（缺 ${(embedding.missing || []).join(', ')}）`;
+  }
+
+  if (els.effective) {
+    els.effective.textContent = JSON.stringify(
+      {
+        ner_backend: values.ner_backend,
+        split_backend: values.split_backend,
+        embedding_backend: values.embedding_backend,
+        llm_provider: values.llm_provider,
+        llm_model: values.llm_model,
+        jieba: data.ner_runtime?.jieba_available,
+      },
+      null,
+      2
+    );
+  }
+}
+
+function fillSelect(select, items, value) {
+  if (!select) return;
+  select.innerHTML = '';
+  for (const item of items || []) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.label || item.id;
+    if (item.id === value) option.selected = true;
+    select.appendChild(option);
+  }
+  if (!items || !items.length) {
+    const option = document.createElement('option');
+    option.textContent = '（无可用项）';
+    select.appendChild(option);
+  }
+}
+
+async function save(patch) {
+  try {
+    const data = await api.put('/api/settings', patch);
+    snapshot = data;
+    fill(data);
+    if (data.effective) {
+      els.effective.textContent = JSON.stringify(data.effective, null, 2);
+    }
+  } catch (error) {
+    alert(`保存失败：${error.message}`);
+    await load();
+  }
+}
+
+async function resplitCurrentBook() {
+  const bookId = typeof els.getBookId === 'function' ? els.getBookId() : null;
+  if (!bookId) {
+    els.resplitHint.textContent = '先到书架选一本书';
+    return;
+  }
+  const pattern = (els.resplitPattern?.value || '').trim();
+  els.resplitHint.textContent = '重新分章中…';
+  try {
+    const result = await api.post(`/api/books/${bookId}/resplit`, {
+      pattern: pattern || null,
+      use_llm: true,
+    });
+    const parts = [`${result.chapter_count} 章 / ${result.paragraph_count} 段`];
+    if (result.invalidated?.facts) parts.push(`作废事实 ${result.invalidated.facts}`);
+    if (result.warnings?.length) parts.push(result.warnings[0]);
+    els.resplitHint.textContent = parts.join(' · ');
+  } catch (error) {
+    els.resplitHint.textContent = `失败：${error.message}`;
+  }
+}
+
+async function startDownload() {
+  try {
+    els.download.disabled = true;
+    const result = await api.post('/api/models/embedding/download', {});
+    renderDownload(result.status);
+    watchDownload(result);
+  } catch (error) {
+    alert(`下载失败：${error.message}`);
+  } finally {
+    els.download.disabled = false;
+  }
+}
+
+function watchDownload(payload) {
+  clearInterval(poll);
+  const status = payload?.embedding?.download || payload?.status;
+  if (!status) return;
+  renderDownload(status);
+  if (status.state !== 'running') return;
+  poll = setInterval(async () => {
+    try {
+      const next = await api.get('/api/models/embedding/download');
+      renderDownload(next.status);
+      if (next.status.state !== 'running') {
+        clearInterval(poll);
+        await load();
+      }
+    } catch {
+      clearInterval(poll);
+    }
+  }, 1000);
+}
+
+function renderDownload(status) {
+  if (!els.embedBar) return;
+  const percent = Number(status?.percent || 0);
+  els.embedBar.style.width = `${percent}%`;
+  if (els.embedStatus) {
+    const state = status?.state || 'idle';
+    const label = {
+      idle: '',
+      running: `下载中 ${percent}%（${status.current || ''}）`,
+      done: '下载完成',
+      failed: `下载失败：${status.error || ''}`,
+    }[state];
+    if (label) els.embedStatus.textContent = label;
+  }
+  if (status?.state === 'failed' && status.error) {
+    els.embedStatus.innerHTML = `<span style="color:#f87171">${escapeHtml(status.error)}</span>`;
+  }
+}

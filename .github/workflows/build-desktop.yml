@@ -1,0 +1,187 @@
+name: build-desktop
+
+# 一律在 GitHub Actions 上打包，本地不产出可分发产物。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "desktop/**"
+      - ".github/workflows/build-desktop.yml"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHON_VERSION: "3.12"
+  TAURI_CLI: "@tauri-apps/cli@^2"
+
+jobs:
+  test:
+    name: backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[embed,ner]"
+      - name: Run unit tests
+        working-directory: backend
+        run: python -m unittest discover -s tests -t . -v
+
+  build:
+    name: ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Intel (12+)
+            os: macos-13
+            target: x86_64-apple-darwin
+            artifact: novelrag-macos-x86_64
+            bundle_args: "--bundles app"
+            sidecar_ext: ""
+          - name: Windows x64 (portable)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: novelrag-windows-x64
+            bundle_args: "--no-bundle"
+            sidecar_ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install python deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[embed,ner]"
+          python -m pip install "pyinstaller>=6.6"
+
+      # ---------------------------------------------------------------- sidecar
+      - name: Build sidecar (PyInstaller)
+        working-directory: backend
+        run: |
+          python -m PyInstaller \
+            --noconfirm --clean --onefile \
+            --name novel-rag-sidecar \
+            --collect-data jieba \
+            --collect-all onnxruntime \
+            --collect-all tokenizers \
+            --hidden-import novel_rag.api.server \
+            --distpath dist --workpath build \
+            sidecar_entry.py
+
+      - name: Place sidecar for Tauri
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          src="backend/dist/novel-rag-sidecar${{ matrix.sidecar_ext }}"
+          dst="desktop/src-tauri/binaries/novel-rag-sidecar-${{ matrix.target }}${{ matrix.sidecar_ext }}"
+          cp "$src" "$dst"
+          ls -la desktop/src-tauri/binaries
+          # 便携包需要不带 triple 的同名文件（Tauri 打包时会重命名，这里额外兜底）
+          cp "$src" "backend/dist/novel-rag-sidecar${{ matrix.sidecar_ext }}"
+
+      # ---------------------------------------------------------------- frontend
+      - name: Vendor foliate-js
+        run: python desktop/scripts/prepare_vendor.py
+
+      # ---------------------------------------------------------------- rust
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      # ---------------------------------------------------------------- build
+      - name: Build app
+        working-directory: desktop
+        run: npx --yes ${{ env.TAURI_CLI }} build --target ${{ matrix.target }} ${{ matrix.bundle_args }}
+
+      # ---------------------------------------------------------------- package
+      - name: Package macOS .app
+        if: matrix.os == 'macos-13'
+        run: |
+          set -euo pipefail
+          out="desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/NovelRag.app"
+          test -d "$out"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$out" "dist/novelrag-macos-x86_64.zip"
+          ls -lh dist
+
+      - name: Package Windows portable
+        if: matrix.os == 'windows-latest'
+        run: |
+          set -euo pipefail
+          exe="desktop/src-tauri/target/${{ matrix.target }}/release/NovelRag.exe"
+          if [ ! -f "$exe" ]; then
+            exe="desktop/src-tauri/target/${{ matrix.target }}/release/novel-rag-desktop.exe"
+          fi
+          test -f "$exe"
+          mkdir -p dist/NovelRag
+          cp "$exe" dist/NovelRag/NovelRag.exe
+          cp "backend/dist/novel-rag-sidecar.exe" dist/NovelRag/novel-rag-sidecar.exe
+          cp desktop/PORTABLE-README.txt dist/NovelRag/使用说明.txt
+          tar -a -c -f dist/novelrag-windows-x64.zip -C dist NovelRag
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect assets
+        run: |
+          mkdir -p out
+          find artifacts -name "*.zip" -exec cp {} out/ \;
+          ls -lh out
+
+      - name: Publish with gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes="$(cat <<'EOF'
+          ## 安装说明
+
+          - **macOS（Intel，12+）**：解压后把 `NovelRag.app` 拖到「应用程序」。
+            首次打开若提示「无法验证开发者」，右键 → 打开，或执行
+            `xattr -dr com.apple.quarantine /Applications/NovelRag.app`。
+          - **Windows（x64，免安装）**：解压后直接运行 `NovelRag.exe`。
+            需要系统已装 Microsoft Edge WebView2 Runtime（Win10 1803+ 通常自带）。
+
+          首次启动会在应用数据目录下载 ~95MB 的 BGE 中文向量模型，之后可离线使用。
+          EOF
+          )"
+          gh release create "$tag" out/*.zip --title "$tag" --notes "$notes" || \
+          gh release upload "$tag" out/*.zip --clobber
