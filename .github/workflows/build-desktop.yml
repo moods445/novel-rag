@@ -97,6 +97,36 @@ jobs:
             --distpath dist --workpath build \
             sidecar_entry.py
 
+      # 直接跑一次产物：参数错位（比如壳传 --home 而后端不认识）会在这里暴露，
+      # 而不是等到用户机器上「启动超时」。
+      - name: Smoke test sidecar
+        run: |
+          set -euo pipefail
+          bin="backend/dist/novel-rag-sidecar${{ matrix.sidecar_ext }}"
+          test -f "$bin"
+          home="$(mktemp -d)"
+          NOVEL_RAG_TOKEN=smoke NOVEL_RAG_EMBED_BACKEND=hash NOVEL_RAG_LLM_PROVIDER= \
+            "$bin" --home "$home" --port 0 > smoke.out 2> smoke.err &
+          pid=$!
+          ok=0
+          for i in $(seq 1 90); do
+            if grep -q '^PORT:' smoke.out 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::sidecar 未输出 PORT，启动失败"
+            echo "--- stdout ---"; cat smoke.out || true
+            echo "--- stderr ---"; cat smoke.err || true
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          grep -E '^(PORT|LOG):' smoke.out
+          test -f "$home/logs/backend.log"
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          echo "sidecar smoke ok"
+
       - name: Place sidecar for Tauri
         run: |
           set -euo pipefail
