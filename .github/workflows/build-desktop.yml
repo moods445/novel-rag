@@ -90,6 +90,7 @@ jobs:
           python -m PyInstaller \
             --noconfirm --clean --onefile \
             --name novel-rag-sidecar \
+            --collect-data novel_rag \
             --collect-data jieba \
             --collect-all onnxruntime \
             --collect-all tokenizers \

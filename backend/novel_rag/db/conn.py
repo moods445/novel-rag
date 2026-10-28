@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from importlib import resources
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -73,7 +74,7 @@ class Database:
     # ------------------------------------------------------------- 迁移
 
     def migrate(self) -> None:
-        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        sql = _schema_sql()
         self.conn.executescript(sql)
         for table, column, decl in _ADDED_COLUMNS:
             self._add_column_if_missing(table, column, decl)
@@ -103,6 +104,23 @@ class Database:
 
     def query_one(self, sql: str, params: tuple | dict = ()) -> sqlite3.Row | None:
         return self.conn.execute(sql, params).fetchone()
+
+
+def _schema_sql() -> str:
+    """读取 schema.sql。
+
+    三种运行形态都要能读到：源码、wheel/editable、PyInstaller onefile。
+    打包时漏带数据文件会在建库阶段直接 FileNotFoundError，
+    所以这里优先走包资源，再退回文件路径。
+    """
+    try:
+        return resources.files("novel_rag.db").joinpath("schema.sql").read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+        if SCHEMA_PATH.exists():
+            return SCHEMA_PATH.read_text(encoding="utf-8")
+        raise FileNotFoundError(
+            f"schema.sql 缺失（{SCHEMA_PATH}）。打包时需 --collect-data novel_rag"
+        ) from exc
 
 
 class _Tx:

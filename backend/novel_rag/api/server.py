@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -102,6 +103,40 @@ class App:
             },
         }
 
+    def watch_embedding_model(self) -> None:
+        """首次启动会后台下载向量模型；下完自动切换到 BGE 并重建向量索引。
+
+        不这么做的话，第一轮分析会用占位哈希向量建索引，之后即使模型下载完成，
+        语义检索也一直是空的（model_id 不同，向量空间不通用）。
+        """
+
+        def worker() -> None:
+            logger = logging.getLogger("novel_rag.embedding")
+            dest = self.settings.resolved_embed_dir
+            for _ in range(900):  # 最多等 30 分钟
+                status = embedding_models.model_status(dest)
+                if status["installed"]:
+                    break
+                time.sleep(2)
+            else:
+                logger.warning("embedding model 仍未就绪: %s", dest)
+                return
+
+            if not isinstance(self.embedder, embedding_mod.HashEmbedding):
+                return
+            try:
+                self.refresh()
+                logger.info("embedding 已切换到 %s，开始重建向量索引", self.embedder.model_id)
+                for row in self.db.query("SELECT id, title FROM books"):
+                    count = index_store.index_vectors(
+                        self.db, row["id"], self.embedder, batch=self.settings.embedding_batch
+                    )
+                    logger.info("reindex %s (%s): %d 段", row["title"], row["id"], count)
+            except Exception:  # noqa: BLE001
+                logger.exception("embedding 切换/重建索引失败")
+
+        threading.Thread(target=worker, name="embedding-watch", daemon=True).start()
+
     def recover_tasks(self) -> list[str]:
         """进程重启：把残留的 running 状态改成 paused，交给用户或下次启动续跑。"""
         rows = self.db.query("SELECT book_id FROM analysis_tasks WHERE state='running'")
@@ -124,16 +159,17 @@ def build_app(settings: Settings | None = None, db_path: str | None = None) -> A
     pipeline = Pipeline(db=db, gateway=gw, embedder=emb, settings=settings)
     qa = QaService(db=db, gateway=gw, embedder=emb, settings=settings)
 
-    # 决策：模型缺失时自动下载（后台线程，不阻塞启动）
+    # 决策：模型缺失时自动下载（后台线程，不阻塞启动）；下完再切 BGE 并重建索引
+    download_started = False
     if settings.embedding_backend in ("auto", "bge") and isinstance(emb, embedding_mod.HashEmbedding):
         try:
-            embedding_models.ensure(
+            download_started = not embedding_models.ensure(
                 settings.resolved_embed_dir, variant=settings.embedding_variant
             )
         except Exception:  # noqa: BLE001 - 下载失败不影响启动
-            pass
+            download_started = False
 
-    return App(
+    app = App(
         settings=settings,
         db=db,
         gateway=gw,
@@ -142,6 +178,9 @@ def build_app(settings: Settings | None = None, db_path: str | None = None) -> A
         qa=qa,
         store=store,
     )
+    if download_started:
+        app.watch_embedding_model()
+    return app
 
 
 # ---------------------------------------------------------------- HTTP 层
