@@ -149,7 +149,8 @@ jobs:
           mkdir -p dist/NovelRag
           cp "$exe" dist/NovelRag/NovelRag.exe
           cp "backend/dist/novel-rag-sidecar.exe" dist/NovelRag/novel-rag-sidecar.exe
-          cp desktop/PORTABLE-README.txt dist/NovelRag/使用说明.txt
+          # 用 ASCII 文件名：Git Bash 写 CJK 文件名会按控制台代码页转码，zip 里会变成乱码
+          cp desktop/PORTABLE-README.txt dist/NovelRag/PORTABLE-README.txt
           # 不用 tar/7z：bsdtar 的 -a 在 Windows 上不会推断成 zip（实测产出 POSIX tar）
           python - <<'EOF'
           import pathlib, zipfile
