@@ -74,8 +74,16 @@ gh release view v0.1.0            # 两个 zip 即为产物
 - macOS：`~/Library/Application Support/com.novelrag.desktop/logs/`
 - Windows：`%APPDATA%\com.novelrag.desktop\logs\`
 
-`sidecar.log` 里出现 `unrecognized arguments` 说明壳与后端的命令行参数不一致；
-出现 `Killed: 9` 多半是 sidecar 没签名（CI 里已显式 `codesign --sign -`）。
+三类典型症状与原因：
+
+| 症状 | 原因 |
+|---|---|
+| `sidecar.log` 里 `unrecognized arguments: --home` | 壳与后端的命令行参数不一致（已修：`__main__` 支持 `--home`） |
+| `FileNotFoundError: .../novel_rag/db/schema.sql` | PyInstaller 没带上包内数据文件（已修：`--collect-data novel_rag`） |
+| `Killed: 9` / 子进程立刻退出 | sidecar 没签名，Gatekeeper 杀进程（已修：CI 显式 `codesign --sign -`） |
+
+CI 里有一道 **sidecar 冒烟**：打完包先真跑一次 `--home ... --port 0`，
+必须看到 `PORT:` 且生成 `logs/backend.log` 才继续打包。上面三类问题都会在这一步暴露。
 
 ## 关键取舍
 
