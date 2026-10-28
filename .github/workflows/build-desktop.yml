@@ -3,6 +3,7 @@ name: build-desktop
 # 一律在 GitHub Actions 上打包，本地不产出可分发产物。
 on:
   push:
+    branches: [master, main]
     tags: ["v*"]
   workflow_dispatch:
   pull_request:
@@ -13,6 +14,11 @@ on:
 
 permissions:
   contents: write
+
+# 同一分支只跑最新一次，避免连推时排队
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
