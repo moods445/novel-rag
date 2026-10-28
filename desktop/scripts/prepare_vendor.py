@@ -1,64 +1,105 @@
 #!/usr/bin/env python3
-"""把 foliate-js 等前端依赖拉到 desktop/web/vendor（不入库）。
+"""把 foliate-js 拉到 desktop/web/vendor（不入库）。
 
-CI 与本地开发都跑这一个脚本，避免"仓库里塞 5MB 第三方源码"。
+CI 与本地开发都跑这一个脚本，避免"仓库里塞第三方源码"。
+
+实现上直接下载 GitHub 的 tarball 并按需解压，**不走 git clone**：
+- 没有 ``.git`` 目录，省 4MB 且不会被 Windows 的只读属性卡住删除；
+- 不产生临时克隆目录，也就不需要递归删目录；
+- 只解压运行时需要的文件（``vendor/zip.js`` 是 EPUB 解压必需，
+  ``vendor/pdfjs`` 13MB 只服务 PDF，直接跳过）。
 
     python3 desktop/scripts/prepare_vendor.py
 """
 
 from __future__ import annotations
 
+import io
+import os
 import shutil
-import subprocess
+import stat
 import sys
-from pathlib import Path
+import tarfile
+import urllib.request
+from pathlib import Path, PurePosixPath
 
-FOLIATE_REPO = "https://github.com/johnfactotum/foliate-js.git"
-FOLIATE_REF = "main"
+REPO = "johnfactotum/foliate-js"
+REF = "main"
+TARBALL = f"https://codeload.github.com/{REPO}/tar.gz/refs/heads/{REF}"
+
+REQUIRED = ["view.js", "epub.js", "paginator.js", "epubcfi.js", "vendor/zip.js"]
+SKIP_DIRS = {("tests",), ("rollup",), ("vendor", "pdfjs")}
+KEEP_EXT = {".js", ".css", ".html", ".json"}
 
 
-def _run(cmd: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(cmd, cwd=cwd, check=True)
+def _wanted(parts: tuple[str, ...]) -> bool:
+    if not parts:
+        return False
+    for skip in SKIP_DIRS:
+        if parts[: len(skip)] == skip:
+            return False
+    return True
+
+
+def _force_rmtree(path: Path) -> None:
+    if not path.exists():
+        return
+    for root, _dirs, files in os.walk(path, topdown=False):
+        for name in files:
+            target = Path(root) / name
+            try:
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+                target.unlink()
+            except OSError:
+                pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def ensure_foliate(vendor: Path) -> Path:
     target = vendor / "foliate-js"
-    if (target / "view.js").exists():
-        print(f"foliate-js 已存在: {target}")
+    if all((target / name).exists() for name in REQUIRED):
+        print(f"foliate-js 已就绪: {target}")
         return target
 
-    vendor.mkdir(parents=True, exist_ok=True)
-    tmp = vendor / ".foliate-js-tmp"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    print(f"clone {FOLIATE_REPO} -> {tmp}")
-    _run(["git", "clone", "--depth", "1", "--branch", FOLIATE_REF, FOLIATE_REPO, str(tmp)])
-    tmp.rename(target)
+    _force_rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
 
-    # 只保留运行时需要的东西：
-    #   vendor/zip.js  —— EPUB 解压，必须保留（漏了它 epub 解析直接报 404）
-    #   vendor/fflate.js —— MOBI 解压
-    #   vendor/pdfjs/  —— 仅 PDF 用，13MB，直接丢掉
-    for relative in ("tests", "rollup", "vendor/pdfjs"):
-        shutil.rmtree(target / relative, ignore_errors=True)
+    print(f"download {TARBALL}")
+    with urllib.request.urlopen(TARBALL, timeout=180) as resp:
+        blob = resp.read()
+    print(f"  {len(blob) / 1024:.0f} KB")
 
-    keep_ext = {".js", ".css", ".html", ".json"}
-    for path in list(target.rglob("*")):
-        if path.is_file() and path.suffix not in keep_ext and path.name != "LICENSE":
-            path.unlink(missing_ok=True)
+    written = 0
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            parts = PurePosixPath(member.name).parts
+            rel = parts[1:]  # 去掉 tarball 的顶层目录
+            if not _wanted(rel):
+                continue
+            path = PurePosixPath(*rel)
+            if path.suffix not in KEEP_EXT and path.name != "LICENSE":
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            dest = target / Path(*rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(handle.read())
+            written += 1
 
-    required = ["view.js", "epub.js", "paginator.js", "vendor/zip.js"]
-    missing = [r for r in required if not (target / r).exists()]
+    missing = [name for name in REQUIRED if not (target / name).exists()]
     if missing:
         raise RuntimeError(f"foliate-js 缺少必需文件: {missing}")
 
-    print(f"foliate-js ready: {target}")
+    size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+    print(f"foliate-js ready: {target} ({written} files, {size / 1024:.0f} KB)")
     return target
 
 
 def main() -> int:
-    here = Path(__file__).resolve()
-    web = here.parents[1] / "web"
+    web = Path(__file__).resolve().parents[1] / "web"
     vendor = web / "vendor"
     vendor.mkdir(parents=True, exist_ok=True)
     ensure_foliate(vendor)

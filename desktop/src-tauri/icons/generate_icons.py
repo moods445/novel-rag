@@ -4,7 +4,7 @@
 产出：32/128/128@2x/256/512/1024 PNG + icon.ico + icon.icns。
 图形语义：深色圆角底 + 一本翻开的书 + 青色书脊。
 
-    python3 desktop/icons/generate_icons.py
+    python3 desktop/src-tauri/icons/generate_icons.py
 """
 
 from __future__ import annotations
