@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -25,6 +26,9 @@ from .ner import NerResult
 from .prescan import scan_with_aliases
 from .resolver import AliasArbiter, LlmAliasArbiter, resolve
 from .validator import validate
+
+
+logger = logging.getLogger("novel_rag.extract")
 
 
 def now_iso() -> str:
@@ -142,6 +146,7 @@ class Pipeline:
             return report
 
         chapters = self._chapters(book_id)
+        logger.info("book %s: %d chapters, cursor=%s", book_id, len(chapters), task["cursor"])
         ner = self._ner(book_id, chapters)
         self._register_alias_entities(book_id, ner)
 
@@ -176,6 +181,7 @@ class Pipeline:
             self._advance(book_id, chapter.idx + 1)
 
         # 收尾判定
+        logger.info("book %s: processed=%d skipped=%d failed=%d", book_id, report.processed, report.skipped, report.failed)
         final = self.status(book_id)
         cursor = final["cursor"]
         total = final["total"]

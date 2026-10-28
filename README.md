@@ -129,7 +129,9 @@ HF_ENDPOINT=https://hf-mirror.com python3 backend/scripts/fetch_embedding_model.
 
 | 变量 | 说明 |
 |---|---|
-| `NOVEL_RAG_HOME` | 数据目录，默认 `~/.novel-rag` |
+| `NOVEL_RAG_HOME` | 数据目录，默认 `~/.novel-rag`（桌面端为 app_data 目录） |
+| `NOVEL_RAG_LOG_DIR` | 日志目录，默认 `<home>/logs` |
+| `NOVEL_RAG_LOG_LEVEL` | 日志级别，默认 `INFO` |
 | `NOVEL_RAG_TOKEN` | Bearer token，空则随机生成并在启动时打印 |
 | `NOVEL_RAG_LLM_PROVIDER` / `NOVEL_RAG_LLM_MODEL` | 从 opencode 配置解析 provider，如 `magpie` / `qnaigc/qiniu/conatus-free` |
 | `NOVEL_RAG_OPENCODE_CONFIG` | opencode 配置文件路径（默认 `~/.config/opencode/opencode.json`） |
@@ -143,6 +145,23 @@ HF_ENDPOINT=https://hf-mirror.com python3 backend/scripts/fetch_embedding_model.
 
 未配置 LLM 时整条链路仍可跑通：抽取退回启发式（`source=heuristic`），
 问答退回抽取式摘录（`degraded=extractive`）。
+
+## 日志
+
+| 文件 | 写入方 | 内容 |
+|---|---|---|
+| `<home>/logs/backend.log` | Python（轮转 5MB×3） | 启动参数、监听端口、分析任务进度、API 500 堆栈 |
+| `<home>/logs/sidecar.log` | Rust 壳 | sidecar 的 stdout/stderr 原文（含启动期崩溃） |
+
+桌面端默认位置：
+
+- macOS：`~/Library/Application Support/com.novelrag.desktop/logs/`
+- Windows：`%APPDATA%\com.novelrag.desktop\logs\`
+
+> 两个文件都必要：Python 的日志要等 `setup_logging` 跑起来才存在，
+> 参数解析失败这类**启动前**崩溃只会出现在 `sidecar.log` 里。
+
+`GET /api/settings` 的 `logging` 字段会返回完整路径，界面左下角也会直接显示。
 
 ## 测试
 

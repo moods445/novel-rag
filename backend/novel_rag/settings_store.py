@@ -83,6 +83,7 @@ class SettingsStore:
     def describe(self, settings: Settings) -> dict:
         from . import embedding_models
         from .llm import opencode
+        from .logging_setup import log_paths
 
         embed_status = embedding_models.model_status(settings.resolved_embed_dir)
         providers = opencode.describe(settings.opencode_config)
@@ -125,6 +126,7 @@ class SettingsStore:
                 "download": embedding_models.download_state(settings.resolved_embed_dir),
             },
             "ner_runtime": _ner_runtime(),
+            "logging": log_paths(settings),
         }
 
 

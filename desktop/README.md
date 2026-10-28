@@ -62,6 +62,21 @@ gh release view v0.1.0            # 两个 zip 即为产物
 > `bsdtar -a` 在 Windows 上不会推断成 zip（产出 POSIX tar），改用 Python `zipfile`；
 > Git Bash 写 CJK 文件名会按控制台代码页转码，包内说明文件用 ASCII 名。
 
+## 排障
+
+启动失败时先看两个日志（界面左下角会显示路径）：
+
+```
+<app_data>/logs/sidecar.log   # 壳记录：spawn 命令、sidecar 的 stdout/stderr
+<app_data>/logs/backend.log   # Python 自己的日志（轮转 5MB×3）
+```
+
+- macOS：`~/Library/Application Support/com.novelrag.desktop/logs/`
+- Windows：`%APPDATA%\com.novelrag.desktop\logs\`
+
+`sidecar.log` 里出现 `unrecognized arguments` 说明壳与后端的命令行参数不一致；
+出现 `Killed: 9` 多半是 sidecar 没签名（CI 里已显式 `codesign --sign -`）。
+
 ## 关键取舍
 
 - **不用 tauri-plugin-shell**：直接 `std::process::Command`，少一层权限与 CI 变量；

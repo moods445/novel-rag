@@ -279,6 +279,22 @@ foliate-js 由 `desktop/scripts/prepare_vendor.py` 在构建前拉取（MIT，50
    Windows 打包成 zip，`webviewInstallMode: skip`；macOS 用 ad-hoc 签名
    （`signingIdentity: "-"`）以便无证书也能启动。
 
+### 桌面端日志与启动契约
+
+启动链路有两段日志，缺一不可：
+
+```
+<app_data>/logs/sidecar.log   Rust 写入：spawn 的完整命令、sidecar stdout/stderr
+<app_data>/logs/backend.log   Python 写入：RotatingFileHandler 5MB×3
+```
+
+**壳与后端的命令行参数必须严格对齐**。壳传 `--home <app_data> --port 0`，
+后端 argparse 必须接受这两个参数；早期版本漏了 `--home`，sidecar 立刻以
+`unrecognized arguments` 退出，而 Python 的日志还没初始化，于是
+既没有 `PORT:` 也没有 `backend.log`，前端只能报「启动超时」。
+现在 `backend_info` 会在子进程退出时直接把退出码与日志路径回传，
+`tests/test_cli.py` 用真实子进程锁住这个契约。
+
 ### 编码期发现并修掉的并发缺陷
 
 后端是 `ThreadingHTTPServer`，早期实现让所有线程共享一个 `sqlite3.Connection`，

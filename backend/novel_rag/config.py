@@ -54,6 +54,10 @@ class Settings:
     # 单批编码条数（BGE 在 CPU 上 batch=16 吞吐最好）
     embedding_batch: int = field(default_factory=lambda: _env_int("NOVEL_RAG_EMBED_BATCH", 16))
 
+    # 日志：默认 <home>/logs，可用 NOVEL_RAG_LOG_DIR 覆盖
+    log_dir: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LOG_DIR", ""))
+    log_level: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LOG_LEVEL", "INFO").upper())
+
     # 人名识别后端：auto（jieba ∪ 正则）| jieba | regex
     ner_backend: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_NER_BACKEND", "auto").lower()
@@ -102,6 +106,16 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.home / "novel-rag.db"
+
+    @property
+    def resolved_log_dir(self) -> Path:
+        if self.log_dir:
+            return Path(self.log_dir).expanduser()
+        return self.home / "logs"
+
+    @property
+    def log_file(self) -> Path:
+        return self.resolved_log_dir / "backend.log"
 
     @property
     def resolved_embed_dir(self) -> Path:

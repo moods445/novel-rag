@@ -134,6 +134,19 @@ jobs:
           set -euo pipefail
           out="desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/NovelRag.app"
           test -d "$out"
+
+          # sidecar 必须可执行且带签名：externalBin 若没被 Tauri 签名，
+          # Gatekeeper 会直接杀掉子进程，表现为「本地后端启动超时」。
+          chmod +x "$out/Contents/MacOS/novel-rag-sidecar" "$out/Contents/MacOS/novel-rag-desktop"
+          test -x "$out/Contents/MacOS/novel-rag-sidecar"
+          codesign --force --sign - "$out/Contents/MacOS/novel-rag-sidecar"
+          codesign --force --sign - "$out"
+          codesign --verify --verbose=2 "$out" || true
+
+          # 把 sidecar 的架构与签名结果打进日志，方便回溯
+          file "$out/Contents/MacOS/"*
+          codesign -dv "$out/Contents/MacOS/novel-rag-sidecar" 2>&1 | head -5 || true
+
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "$out" "dist/novelrag-macos-x86_64.zip"
           ls -lh dist

@@ -47,6 +47,7 @@ const els = {
 const cards = new Map();
 
 const state = {
+  logPath: '',
   books: [],
   book: null,
   chapters: [],
@@ -69,16 +70,23 @@ async function backendInfo() {
 }
 
 async function waitForBackend() {
-  for (let i = 0; i < 300; i += 1) {
+  // 120s：PyInstaller onefile 首次解压 + onnxruntime 导入在 Intel Mac 上要十几秒
+  for (let i = 0; i < 600; i += 1) {
+    let info = null;
     try {
-      const info = await backendInfo();
-      if (info && info.ready && info.port) return info;
+      info = await backendInfo();
     } catch {
       /* 壳还没建好，继续等 */
     }
+    if (info && info.log) state.logPath = info.log;
+    if (info && info.ready && info.port) return info;
+    // 子进程已经死了就别再等到超时，把原因直接甩出来
+    if (info && info.error) throw new Error(info.error);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error('本地后端启动超时');
+  throw new Error(
+    `本地后端启动超时（120s）${state.logPath ? `，日志：${state.logPath}` : ''}`
+  );
 }
 
 async function boot() {
@@ -87,10 +95,17 @@ async function boot() {
     const info = await waitForBackend();
     setBackend(info);
     els.status.textContent = `后端就绪 :${info.port}`;
-    els.hint.textContent = info.mode === 'python-dev' ? '开发模式（源码）' : info.home || '';
+    els.hint.textContent = info.mode === 'python-dev'
+      ? `开发模式（源码）· 日志：${info.log}`
+      : `日志：${info.log}`;
+    els.hint.title = info.log;
   } catch (error) {
     els.status.classList.add('bad');
     els.status.textContent = `后端启动失败：${error.message}`;
+    if (state.logPath) {
+      els.hint.textContent = `日志：${state.logPath}`;
+      els.hint.title = state.logPath;
+    }
     return;
   }
 

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import traceback
@@ -68,9 +69,12 @@ class App:
             thread.start()
 
     def _analysis_worker(self, book_id: str, max_chapters: int | None = None) -> None:
+        logger = logging.getLogger("novel_rag.analysis")
         try:
-            self.pipeline.run(book_id, max_chapters=max_chapters)
+            report = self.pipeline.run(book_id, max_chapters=max_chapters)
+            logger.info("analysis %s: %s", book_id, report.to_dict())
         except Exception:  # noqa: BLE001
+            logger.exception("analysis %s crashed", book_id)
             traceback.print_exc()
 
     def refresh(self) -> dict:
@@ -222,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": str(exc)})
             return
         except Exception as exc:  # noqa: BLE001
+            logging.getLogger("novel_rag.api").exception(
+                "%s %s failed", method, self.path
+            )
             traceback.print_exc()
             self._send(500, {"error": str(exc)})
             return

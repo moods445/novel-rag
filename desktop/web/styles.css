@@ -154,6 +154,12 @@ main {
   font-size: 12.5px;
 }
 
+.sidebar-foot .hint {
+  word-break: break-all;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
 /* ---------------------------------------------------------------- 控件 */
 
 .btn {
