@@ -27,6 +27,8 @@ defaults:
 env:
   PYTHON_VERSION: "3.12"
   TAURI_CLI: "@tauri-apps/cli@^2"
+  # Rust / PyInstaller 产物的最低系统版本（macOS 12+）
+  MACOSX_DEPLOYMENT_TARGET: "12.0"
 
 jobs:
   test:
@@ -54,7 +56,8 @@ jobs:
       matrix:
         include:
           - name: macOS Intel (12+)
-            os: macos-13
+            # macos-13 已下线；macos-15-intel 是当前唯一的 x64 macOS runner
+            os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: novelrag-macos-x86_64
             bundle_args: "--bundles app"
@@ -95,13 +98,15 @@ jobs:
 
       - name: Place sidecar for Tauri
         run: |
-          mkdir -p desktop/src-tauri/binaries
+          set -euo pipefail
           src="backend/dist/novel-rag-sidecar${{ matrix.sidecar_ext }}"
           dst="desktop/src-tauri/binaries/novel-rag-sidecar-${{ matrix.target }}${{ matrix.sidecar_ext }}"
+          mkdir -p desktop/src-tauri/binaries
+          ls -la backend/dist
+          test -f "$src"
           cp "$src" "$dst"
+          test -f "$dst"
           ls -la desktop/src-tauri/binaries
-          # 便携包需要不带 triple 的同名文件（Tauri 打包时会重命名，这里额外兜底）
-          cp "$src" "backend/dist/novel-rag-sidecar${{ matrix.sidecar_ext }}"
 
       # ---------------------------------------------------------------- frontend
       - name: Vendor foliate-js
@@ -123,7 +128,7 @@ jobs:
 
       # ---------------------------------------------------------------- package
       - name: Package macOS .app
-        if: matrix.os == 'macos-13'
+        if: startsWith(matrix.os, 'macos')
         run: |
           set -euo pipefail
           out="desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/NovelRag.app"
