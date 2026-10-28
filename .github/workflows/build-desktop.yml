@@ -150,7 +150,17 @@ jobs:
           cp "$exe" dist/NovelRag/NovelRag.exe
           cp "backend/dist/novel-rag-sidecar.exe" dist/NovelRag/novel-rag-sidecar.exe
           cp desktop/PORTABLE-README.txt dist/NovelRag/使用说明.txt
-          tar -a -c -f dist/novelrag-windows-x64.zip -C dist NovelRag
+          # 不用 tar/7z：bsdtar 的 -a 在 Windows 上不会推断成 zip（实测产出 POSIX tar）
+          python - <<'EOF'
+          import pathlib, zipfile
+          root = pathlib.Path("dist") / "NovelRag"
+          out = pathlib.Path("dist") / "novelrag-windows-x64.zip"
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file():
+                      zf.write(path, path.relative_to(root.parent))
+          print("zip:", out, out.stat().st_size)
+          EOF
           ls -lh dist
 
       # 不用 upload-artifact：账户的 Actions 产物配额经常打满，
