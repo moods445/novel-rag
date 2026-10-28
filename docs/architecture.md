@@ -262,10 +262,11 @@ foliate-js 由 `desktop/scripts/prepare_vendor.py` 在构建前拉取（MIT，50
 ### 打包策略
 
 **一律在 GitHub Actions 上构建，本地不产出可分发产物。**
+产物不走 `upload-artifact`（账户配额容易打满），tag 构建时由 `gh release upload` 直传 Release。
 
 | 平台 | runner | 产物 |
 |---|---|---|
-| macOS Intel 12+ | `macos-13` | `.app` → `novelrag-macos-x86_64.zip` |
+| macOS Intel 12+ | `macos-15-intel` | `.app` → `novelrag-macos-x86_64.zip` |
 | Windows x64 | `windows-latest` | `--no-bundle` → 手工组 `NovelRag.exe` + sidecar → zip（免安装） |
 
 三个关键取舍：

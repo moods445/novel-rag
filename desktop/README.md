@@ -47,14 +47,20 @@ python3 -m http.server 8000
 
 | 平台 | runner | 产物 |
 |---|---|---|
-| macOS Intel（12+） | `macos-13` | `novelrag-macos-x86_64.zip`（内含 `NovelRag.app`） |
+| macOS Intel（12+） | `macos-15-intel` | `novelrag-macos-x86_64.zip`（内含 `NovelRag.app`） |
 | Windows x64 | `windows-latest` | `novelrag-windows-x64.zip`（免安装，exe + sidecar） |
 
-推 tag 会自动发 Release：
+推 tag 会自动构建并把 zip 直传 Release（不使用 `upload-artifact`，
+因为账户的 Actions 产物配额会被打满）：
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag -a v0.1.0 -m "Novel RAG v0.1.0" && git push origin v0.1.0
+gh release view v0.1.0            # 两个 zip 即为产物
 ```
+
+> 踩过的坑：`macos-13` 已从 GitHub 下线，Intel 只能用 `macos-15-intel`；
+> `bsdtar -a` 在 Windows 上不会推断成 zip（产出 POSIX tar），改用 Python `zipfile`；
+> Git Bash 写 CJK 文件名会按控制台代码页转码，包内说明文件用 ASCII 名。
 
 ## 关键取舍
 
