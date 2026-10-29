@@ -71,10 +71,21 @@ class Settings:
     embedding_variant: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_EMBED_VARIANT", "fp32")
     )
+    # 模型下载源：空 = 自动（先直连官方，失败后换国内镜像）；也可显式填 URL
+    embedding_endpoint: str = field(
+        default_factory=lambda: os.environ.get("NOVEL_RAG_HF_ENDPOINT", os.environ.get("HF_ENDPOINT", ""))
+    )
+
+    # 网络代理：http/https 代理地址，空 = 直连（仍遵循系统 http_proxy / https_proxy）
+    network_proxy: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_PROXY", ""))
 
     # LLM：留空则走具体的 EXTRACT_/QUERY_ 配置；填写则用 opencode 里的 provider
     llm_provider: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LLM_PROVIDER", ""))
     llm_model: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LLM_MODEL", ""))
+    # 界面里添加的自定义 provider（JSON 列表），与 opencode 配置合并后供网关使用
+    custom_providers: str = field(
+        default_factory=lambda: os.environ.get("NOVEL_RAG_CUSTOM_PROVIDERS", "")
+    )
     opencode_config: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_OPENCODE_CONFIG", "")
     )

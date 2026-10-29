@@ -92,13 +92,18 @@ curl -H 'Authorization: Bearer devtoken' -H 'Content-Type: application/json' \
 | 人名识别 | `auto`(jieba∪正则) / `jieba` / `regex` | jieba 词性标注 `nr`，CPU、词典约 5MB；不装则自动退回正则 |
 | 章节识别 | `auto`(规则+LLM兜底) / `rule` / `llm` | 规则命中率不足时才调 LLM，也可强制总是走 LLM |
 | 语义检索 | `bge`(BGE-small-zh-v1.5) / `hash` / `auto` | ONNX + CPU；缺失时自动后台下载 |
-| 推理 | opencode 配置里的任意 provider | 默认读 `~/.config/opencode/opencode.json` |
+| 推理 | opencode 配置 + 界面添加的任意 provider | 默认读 `~/.config/opencode/opencode.json`，也可在设置页手动添加 |
+
+模型下载默认先直连 HuggingFace，失败后自动切换国内镜像（`hf-mirror.com`）；
+下载源与网络代理都能在设置页修改，代理同时作用于 LLM 请求。
 
 ```bash
 # 手动预下载 embedding（也可由后端启动时自动下载）
 python3 backend/scripts/fetch_embedding_model.py --variant fp32
-# 国内镜像
+# 固定国内镜像
 HF_ENDPOINT=https://hf-mirror.com python3 backend/scripts/fetch_embedding_model.py
+# 走代理
+python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 ```
 
 ## 主要接口
@@ -119,7 +124,9 @@ HF_ENDPOINT=https://hf-mirror.com python3 backend/scripts/fetch_embedding_model.
 | POST | `/api/ask` | 问答（唯一消费入口） |
 | GET/PUT/DELETE | `/api/settings` | 切换 NER / 分章 / embedding / LLM（PUT 后组件热重建，无需重启） |
 | GET | `/api/models` | 可选项清单（含各模型是否已安装） |
-| GET/POST | `/api/models/embedding/download` | 模型下载状态 / 触发下载 |
+| GET/POST | `/api/models/embedding/download` | 模型下载状态 / 触发下载（可带 `endpoint`） |
+| GET/POST | `/api/providers` | 合并后的 provider 清单 / 添加或更新自定义 provider |
+| DELETE | `/api/providers/{name}` | 删除自定义 provider |
 | PUT | `/api/books/{id}/chapters/{idx}` | 人工修改章节标题 |
 | POST | `/api/books/{id}/resplit` | 用正则重新分章（会作废旧知识，返回失效清单） |
 | GET | `/api/books/{id}/epub` | 生成 EPUB 供 foliate-js 渲染 |
@@ -135,6 +142,9 @@ HF_ENDPOINT=https://hf-mirror.com python3 backend/scripts/fetch_embedding_model.
 | `NOVEL_RAG_TOKEN` | Bearer token，空则随机生成并在启动时打印 |
 | `NOVEL_RAG_LLM_PROVIDER` / `NOVEL_RAG_LLM_MODEL` | 从 opencode 配置解析 provider，如 `magpie` / `qnaigc/qiniu/conatus-free` |
 | `NOVEL_RAG_OPENCODE_CONFIG` | opencode 配置文件路径（默认 `~/.config/opencode/opencode.json`） |
+| `NOVEL_RAG_PROXY` | 网络代理（`http://host:port`），作用于模型下载与 LLM 请求 |
+| `NOVEL_RAG_HF_ENDPOINT` / `HF_ENDPOINT` | 模型下载源；留空则官方直连失败后自动换国内镜像 |
+| `NOVEL_RAG_CUSTOM_PROVIDERS` | 界面添加的 provider（JSON），一般由设置页维护 |
 | `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 覆盖式直连（优先级高于 opencode） |
 | `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 同上，用于查询 |
 | `NOVEL_RAG_NER_BACKEND` | `auto` / `jieba` / `regex` |

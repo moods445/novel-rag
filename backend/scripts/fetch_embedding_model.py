@@ -6,6 +6,7 @@
 
     python3 scripts/fetch_embedding_model.py
     HF_ENDPOINT=https://hf-mirror.com python3 scripts/fetch_embedding_model.py
+    python3 scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
     python3 scripts/fetch_embedding_model.py --variant int8 --dest ./models/bge-small-zh-v1.5
 """
 
@@ -46,11 +47,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dest", default=str(Path("~/.novel-rag/models/bge-small-zh-v1.5").expanduser()))
     parser.add_argument("--variant", choices=sorted(VARIANTS), default="fp32")
-    parser.add_argument("--endpoint", default=os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
+    parser.add_argument(
+        "--endpoint",
+        default=os.environ.get("HF_ENDPOINT", ""),
+        help="下载源；留空则先直连官方，失败后自动换国内镜像",
+    )
+    parser.add_argument("--proxy", default=os.environ.get("NOVEL_RAG_PROXY", ""))
     args = parser.parse_args(argv)
 
     dest = Path(args.dest).expanduser()
-    state = embedding_models.download(dest, variant=args.variant, endpoint=args.endpoint)
+    state = embedding_models.download(
+        dest, variant=args.variant, endpoint=args.endpoint or None, proxy=args.proxy or None
+    )
     print(f"done  model dir = {dest} ({state['total_mb']} MB)")
     print("       export NOVEL_RAG_EMBED_DIR=" + str(dest))
     return 0

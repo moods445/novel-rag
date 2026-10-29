@@ -26,6 +26,12 @@ FREE_TEXT: dict[str, int] = {
     "llm_model": 128,
     "embedding_variant": 16,
     "embedding_dir": 512,
+    # 模型下载源：空 = 自动（官方直连失败后换镜像）
+    "embedding_endpoint": 512,
+    # 网络代理：http/https 代理地址
+    "network_proxy": 256,
+    # 界面添加的 provider（JSON 列表，含 api_key，仅存本地库）
+    "custom_providers": 20000,
 }
 ALLOWED = set(ENUMS) | set(FREE_TEXT)
 
@@ -33,6 +39,8 @@ ALLOWED = set(ENUMS) | set(FREE_TEXT)
 class SettingsStore:
     def __init__(self, db: Database) -> None:
         self.db = db
+        # 上一次通过覆盖值写入内存的键；被删除时要回退默认值
+        self._applied: set[str] = set()
 
     # ------------------------------------------------------------ 读写
 
@@ -68,14 +76,19 @@ class SettingsStore:
         return self.get_all()
 
     def apply(self, settings: Settings) -> Settings:
-        """把库里的覆盖值写回 Settings 实例（原地修改并返回）。"""
+        """把库里的覆盖值写回 Settings 实例（原地修改并返回）。
+
+        被清除的覆盖项要回退到默认值（否则内存里会残留上一次的取值）。
+        """
         overrides = self.get_all()
+        defaults = Settings()
+        for key in self._applied - set(overrides):
+            if hasattr(settings, key):
+                setattr(settings, key, getattr(defaults, key))
         for key, value in overrides.items():
-            if key == "embedding_dir":
-                settings.embedding_dir = value
-                continue
             if hasattr(settings, key):
                 setattr(settings, key, value)
+        self._applied = set(overrides)
         return settings
 
     # ------------------------------------------------------------ 展示
@@ -86,7 +99,10 @@ class SettingsStore:
         from .logging_setup import log_paths
 
         embed_status = embedding_models.model_status(settings.resolved_embed_dir)
-        providers = opencode.describe(settings.opencode_config)
+        providers = opencode.describe(settings.opencode_config, settings.custom_providers)
+        # custom_providers 里含 api_key，不回显；providers 列表只暴露 has_key
+        overrides = self.get_all()
+        overrides.pop("custom_providers", None)
 
         return {
             "values": {
@@ -97,8 +113,10 @@ class SettingsStore:
                 "llm_provider": settings.llm_provider,
                 "llm_model": settings.llm_model,
                 "embedding_variant": settings.embedding_variant,
+                "embedding_endpoint": settings.embedding_endpoint,
+                "network_proxy": settings.network_proxy,
             },
-            "overrides": self.get_all(),
+            "overrides": overrides,
             "options": {
                 "ner_backend": [
                     {"id": "auto", "label": "jieba + 正则（推荐）", "requires": ["jieba"]},
@@ -120,9 +138,15 @@ class SettingsStore:
                     {"id": "hash", "label": "占位哈希（联调用）", "installed": True},
                 ],
                 "llm": providers,
+                "embedding_endpoint": [
+                    {"id": "", "label": "自动（先直连官方，失败自动换国内镜像）"},
+                    {"id": "https://huggingface.co", "label": "HuggingFace 官方"},
+                    {"id": "https://hf-mirror.com", "label": "国内镜像 hf-mirror.com"},
+                ],
             },
             "embedding": {
                 **embed_status,
+                "endpoint": settings.embedding_endpoint,
                 "download": embedding_models.download_state(settings.resolved_embed_dir),
             },
             "ner_runtime": _ner_runtime(),

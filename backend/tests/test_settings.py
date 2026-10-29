@@ -9,7 +9,7 @@ from pathlib import Path
 
 from novel_rag.api.server import build_app
 from novel_rag.config import Settings
-from novel_rag.errors import InvalidInput
+from novel_rag.errors import InvalidInput, NotFound
 from novel_rag.ingest import importer
 from novel_rag.llm import opencode
 from novel_rag.llm.gateway import OpenAICompatProvider, StubProvider, from_settings
@@ -122,6 +122,70 @@ class GatewayResolutionTest(unittest.TestCase):
         self.assertEqual(gateway.extract.name, "echo-extract")
 
 
+class CustomProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.custom = json.dumps(
+            [
+                {
+                    "name": "local-vllm",
+                    "label": "本地 vLLM",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "sk-local",
+                    "models": ["qwen2.5-7b", "qwen2.5-14b"],
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_parse_custom_tolerates_bad_input(self) -> None:
+        self.assertEqual(opencode.parse_custom("not-json"), {})
+        self.assertEqual(opencode.parse_custom("[]"), {})
+        specs = opencode.parse_custom(self.custom)
+        self.assertEqual(specs["local-vllm"].base_url, "http://127.0.0.1:8000/v1")
+        self.assertTrue(specs["local-vllm"].custom)
+
+    def test_gateway_uses_custom_provider(self) -> None:
+        settings = Settings(
+            home=Path(self._tmp.name),
+            llm_provider="local-vllm",
+            llm_model="qwen2.5-7b",
+            custom_providers=self.custom,
+            opencode_config="/nonexistent.json",
+            network_proxy="http://127.0.0.1:7890",
+        )
+        gateway = from_settings(settings)
+        self.assertIsInstance(gateway.extract, OpenAICompatProvider)
+        self.assertEqual(gateway.extract.name, "local-vllm:qwen2.5-7b")
+        self.assertEqual(gateway.extract.proxy, "http://127.0.0.1:7890")
+
+    def test_describe_merges_without_leaking_keys(self) -> None:
+        described = opencode.describe("/nonexistent.json", self.custom)
+        payload = json.dumps(described, ensure_ascii=False)
+        self.assertNotIn("sk-local", payload)
+        self.assertEqual(
+            [p["name"] for p in described["providers"] if p["custom"]], ["local-vllm"]
+        )
+
+    def test_custom_overrides_opencode_provider(self) -> None:
+        merged = opencode.merged("/nonexistent.json", self.custom)
+        self.assertEqual(merged["local-vllm"].models[0], "qwen2.5-7b")
+
+    def test_custom_provider_without_models_does_not_borrow_default(self) -> None:
+        raw = json.dumps([{"name": "naked", "base_url": "http://127.0.0.1:9000/v1"}])
+        settings = Settings(
+            home=Path(self._tmp.name),
+            llm_provider="naked",
+            custom_providers=raw,
+            opencode_config="/nonexistent.json",
+        )
+        gateway = from_settings(settings)
+        self.assertEqual(gateway.extract.name, "echo-extract")
+
+
 class SettingsStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -166,6 +230,56 @@ class SettingsStoreTest(unittest.TestCase):
         self.assertIn("embedding", described)
         ids = {item["id"] for item in described["options"]["ner_backend"]}
         self.assertEqual(ids, {"auto", "jieba", "regex"})
+        self.assertIn("embedding_endpoint", described["options"])
+        self.assertIn("network_proxy", described["values"])
+
+    def test_network_settings_are_stored(self) -> None:
+        self.store.update(
+            {"network_proxy": "http://127.0.0.1:7890", "embedding_endpoint": "https://hf-mirror.com"}
+        )
+        applied = self.store.apply(self.settings)
+        self.assertEqual(applied.network_proxy, "http://127.0.0.1:7890")
+        self.assertEqual(applied.embedding_endpoint, "https://hf-mirror.com")
+
+    def test_provider_add_and_delete(self) -> None:
+        saved = self.app.save_provider(
+            {
+                "name": "my-api",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "sk-xxx",
+                "models": "m1, m2",
+            }
+        )
+        names = [p["name"] for p in saved["providers"]]
+        self.assertIn("my-api", names)
+        custom = [p for p in saved["providers"] if p["custom"]]
+        self.assertEqual(custom[0]["models"], ["m1", "m2"])
+        self.assertNotIn("sk-xxx", json.dumps(saved, ensure_ascii=False))
+
+        described = self.store.describe(self.settings)
+        self.assertNotIn("custom_providers", described["overrides"])
+        self.assertNotIn("sk-xxx", json.dumps(described, ensure_ascii=False))
+
+        removed = self.app.delete_provider("my-api")
+        self.assertNotIn("my-api", [p["name"] for p in removed["providers"]])
+        with self.assertRaises(NotFound):
+            self.app.delete_provider("my-api")
+
+    def test_provider_rejects_bad_base_url(self) -> None:
+        with self.assertRaises(InvalidInput):
+            self.app.save_provider({"name": "bad", "base_url": "ftp://x"})
+
+
+class EmbeddingEndpointTest(unittest.TestCase):
+    def test_default_uses_official_then_mirror(self) -> None:
+        from novel_rag import embedding_models
+
+        self.assertEqual(
+            embedding_models._endpoints(None), list(embedding_models.DEFAULT_ENDPOINTS)
+        )
+        self.assertEqual(
+            embedding_models._endpoints("https://hf-mirror.com/"), ["https://hf-mirror.com"]
+        )
 
 
 class SplitBackendTest(unittest.TestCase):

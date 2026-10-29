@@ -147,6 +147,10 @@
                 <button class="btn" id="btn-embed-download">下载模型</button>
               </div>
               <div class="progress"><div id="embed-bar"></div></div>
+
+              <div class="panel-head" style="margin-top: 18px"><span>模型下载源</span></div>
+              <select id="set-embed-endpoint" class="select wide"></select>
+              <p class="hint">默认自动：先直连 HuggingFace，失败后自动切换国内镜像；也可固定某一源。</p>
             </div>
 
             <div class="panel">
@@ -155,12 +159,37 @@
               <select id="set-llm-provider" class="select wide"></select>
               <select id="set-llm-model" class="select wide" style="margin-top: 8px"></select>
               <p class="hint">
-                直连 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>），
-                抽取与查询共用同一个模型。未配置时退回离线模式：抽取用启发式、问答用原文摘录。
+                列表包含 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>）
+                以及下方手动添加的 provider，抽取与查询共用同一个模型。未配置时退回离线模式：
+                抽取用启发式、问答用原文摘录。
               </p>
+
+              <div class="panel-head" style="margin-top: 18px"><span>添加 provider</span></div>
+              <input id="provider-name" class="input wide" placeholder="名称（唯一，如 my-provider）" />
+              <input id="provider-base-url" class="input wide" placeholder="Base URL（如 https://api.example.com/v1）" />
+              <input id="provider-api-key" type="password" class="input wide" placeholder="API Key（可选）" />
+              <input id="provider-models" class="input wide" placeholder="模型列表，逗号分隔（可选）" />
+              <div class="model-row">
+                <span id="provider-hint" class="hint"></span>
+                <button class="btn" id="btn-provider-add">添加</button>
+              </div>
+              <ul id="provider-list" class="list" style="margin-top: 8px"></ul>
 
               <div class="panel-head" style="margin-top: 18px"><span>当前生效</span></div>
               <pre id="effective" class="code"></pre>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span>网络代理</span></div>
+              <p class="hint">
+                模型下载与 LLM 请求都会走这里配置的代理；留空则直连。
+                （仍会读取系统的 <code>http_proxy</code> / <code>https_proxy</code> 环境变量）
+              </p>
+              <input id="set-proxy" class="input wide" placeholder="http://127.0.0.1:7890（留空 = 直连）" />
+              <div class="model-row">
+                <span id="proxy-hint" class="hint"></span>
+                <button class="btn" id="btn-proxy-save">保存</button>
+              </div>
             </div>
 
             <div class="panel">

@@ -34,6 +34,7 @@ from ..ingest.resplit import resplit_book, update_chapter_title
 from ..ingest.epub_builder import build_epub
 from ..llm import embedding as embedding_mod
 from ..llm import gateway as gateway_mod
+from ..llm import opencode
 from ..qa.service import QaService
 from ..settings_store import SettingsStore
 from ..retrieve import structured
@@ -137,6 +138,82 @@ class App:
 
         threading.Thread(target=worker, name="embedding-watch", daemon=True).start()
 
+    # -------------------------------------------------------- provider 管理
+
+    def providers_payload(self) -> dict:
+        """opencode 配置与界面添加的 provider 合并后的清单（不含 api_key）。"""
+        payload = opencode.describe(self.settings.opencode_config, self.settings.custom_providers)
+        payload["values"] = {
+            "llm_provider": self.settings.llm_provider,
+            "llm_model": self.settings.llm_model,
+        }
+        return payload
+
+    def save_provider(self, body: dict) -> dict:
+        """新增或更新一个界面自定义 provider。"""
+        name = str(body.get("name") or "").strip()
+        base_url = str(body.get("base_url") or body.get("baseURL") or "").strip().rstrip("/")
+        if not name:
+            raise InvalidInput("provider 名称不能为空")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+            raise InvalidInput("provider 名称只能包含字母、数字、点、下划线和短横线（≤64 字）")
+        if not base_url.startswith(("http://", "https://")):
+            raise InvalidInput("base_url 需以 http:// 或 https:// 开头")
+
+        models = body.get("models")
+        if isinstance(models, str):
+            models = [m.strip() for m in re.split(r"[,\n]", models)]
+        elif isinstance(models, list):
+            models = [str(m).strip() for m in models]
+        else:
+            models = []
+        models = [m for m in models if m]
+
+        current = opencode.parse_custom(self.settings.custom_providers)
+        existing = current.get(name)
+        raw_key = body.get("api_key")
+        if raw_key is None and existing is not None:
+            api_key = existing.api_key  # 未传 key 时保留原值
+        else:
+            api_key = str(raw_key or "").strip()
+
+        current[name] = opencode.ProviderSpec(
+            name=name,
+            base_url=base_url,
+            api_key=api_key,
+            models=models,
+            label=str(body.get("label") or name).strip() or name,
+            custom=True,
+        )
+        self._store_custom(current)
+        return self.providers_payload()
+
+    def delete_provider(self, name: str) -> dict:
+        current = opencode.parse_custom(self.settings.custom_providers)
+        if name not in current:
+            raise NotFound("provider not found")
+        del current[name]
+        changes: dict[str, str] = {
+            "custom_providers": json.dumps(
+                [spec.to_storage() for spec in current.values()], ensure_ascii=False
+            )
+            if current
+            else ""
+        }
+        if self.settings.llm_provider == name:
+            changes["llm_provider"] = ""
+            changes["llm_model"] = ""
+        self.store.update(changes)
+        self.refresh()
+        return self.providers_payload()
+
+    def _store_custom(self, specs) -> None:
+        text = json.dumps(
+            [spec.to_storage() for spec in specs.values()], ensure_ascii=False
+        )
+        self.store.update({"custom_providers": text})
+        self.refresh()
+
     def recover_tasks(self) -> list[str]:
         """进程重启：把残留的 running 状态改成 paused，交给用户或下次启动续跑。"""
         rows = self.db.query("SELECT book_id FROM analysis_tasks WHERE state='running'")
@@ -164,7 +241,10 @@ def build_app(settings: Settings | None = None, db_path: str | None = None) -> A
     if settings.embedding_backend in ("auto", "bge") and isinstance(emb, embedding_mod.HashEmbedding):
         try:
             download_started = not embedding_models.ensure(
-                settings.resolved_embed_dir, variant=settings.embedding_variant
+                settings.resolved_embed_dir,
+                variant=settings.embedding_variant,
+                endpoint=settings.embedding_endpoint or None,
+                proxy=settings.network_proxy or None,
             )
         except Exception:  # noqa: BLE001 - 下载失败不影响启动
             download_started = False
@@ -246,6 +326,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         self._dispatch("PUT")
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
+
     def _dispatch(self, method: str) -> None:
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})
@@ -315,6 +398,15 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["models"]:
             return self.app.store.describe(self.app.settings)["options"]
 
+        # provider：opencode 配置 + 界面添加（可增删）
+        if tail == ["providers"]:
+            if method == "GET":
+                return self.app.providers_payload()
+            if method == "POST":
+                return self.app.save_provider(self._read_json())
+        if len(tail) == 2 and tail[0] == "providers" and method == "DELETE":
+            return self.app.delete_provider(tail[1])
+
         if len(tail) >= 3 and tail[:2] == ["models", "embedding"] and tail[2] == "download":
             dest = self.app.settings.resolved_embed_dir
             if method == "GET":
@@ -327,7 +419,8 @@ class Handler(BaseHTTPRequestHandler):
                 state = embedding_models.download_async(
                     dest,
                     variant=str(body.get("variant") or self.app.settings.embedding_variant),
-                    endpoint=body.get("endpoint") or None,
+                    endpoint=body.get("endpoint") or self.app.settings.embedding_endpoint or None,
+                    proxy=self.app.settings.network_proxy or None,
                 )
                 return {
                     "status": state,

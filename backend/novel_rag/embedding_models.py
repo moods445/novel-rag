@@ -13,7 +13,11 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .net import build_opener
+
 REPO = "Xenova/bge-small-zh-v1.5"
+# 未显式配置下载源时：先直连官方，失败后自动换国内镜像（国内网络直连常常不可用）
+DEFAULT_ENDPOINTS = ("https://huggingface.co", "https://hf-mirror.com")
 VARIANTS = {
     "fp32": "onnx/model.onnx",
     "int8": "onnx/model_int8.onnx",
@@ -32,6 +36,7 @@ class DownloadState:
     current: str = ""
     error: str = ""
     path: str = ""
+    endpoint: str = ""
     updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -78,14 +83,21 @@ def _set(dest: Path, **kwargs) -> None:
         state.updated_at = time.time()
 
 
-def _fetch(url: str, target: Path, dest: Path) -> int:
+def _endpoints(endpoint: str | None) -> list[str]:
+    """下载源候选：显式配置只用一个；未配置则官方 + 国内镜像依次尝试。"""
+    if endpoint and endpoint.strip():
+        return [endpoint.strip().rstrip("/")]
+    return list(DEFAULT_ENDPOINTS)
+
+
+def _fetch(url: str, target: Path, dest: Path, *, opener) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0:
         _set(dest, current=target.name, downloaded=target.stat().st_size)
         return target.stat().st_size
 
     tmp = target.with_suffix(target.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=120) as resp, tmp.open("wb") as fh:
+    with opener.open(url, timeout=120) as resp, tmp.open("wb") as fh:
         total = int(resp.headers.get("Content-Length") or 0)
         _set(dest, current=target.name, total=total, downloaded=0, percent=0)
         read = 0
@@ -97,30 +109,60 @@ def _fetch(url: str, target: Path, dest: Path) -> int:
     return target.stat().st_size
 
 
-def download(dest: str | Path, *, variant: str = "fp32", endpoint: str | None = None) -> dict:
-    """同步下载。返回最终状态。"""
+def _download_from(dest: Path, *, variant: str, endpoint: str, opener) -> None:
+    model_path = dest / "model.onnx"
+    if not (model_path.exists() and model_path.stat().st_size > 0):
+        filename = VARIANTS.get(variant, VARIANTS["fp32"])
+        tmp = dest / "model.onnx.tmp"
+        _fetch(f"{endpoint}/{REPO}/resolve/main/{filename}", tmp, dest, opener=opener)
+        # 统一命名为 model.onnx
+        tmp.replace(model_path)
+    for asset in ASSETS:
+        try:
+            _fetch(f"{endpoint}/{REPO}/resolve/main/{asset}", dest / asset, dest, opener=opener)
+        except (urllib.error.URLError, TimeoutError):
+            continue  # 可选文件，失败不影响推理
+
+
+def download(
+    dest: str | Path,
+    *,
+    variant: str = "fp32",
+    endpoint: str | None = None,
+    proxy: str | None = None,
+) -> dict:
+    """同步下载。返回最终状态。
+
+    下载源可显式指定；未指定时先直连官方，失败后自动回退国内镜像。
+    """
     dest = Path(dest).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
-    endpoint = (endpoint or "https://huggingface.co").rstrip("/")
-    _set(dest, state="running", error="", percent=0, total=0)
-    try:
-        filename = VARIANTS.get(variant, VARIANTS["fp32"])
-        _fetch(f"{endpoint}/{REPO}/resolve/main/{filename}", dest / "model.onnx.tmp", dest)
-        # 统一命名为 model.onnx
-        (dest / "model.onnx.tmp").replace(dest / "model.onnx")
-        for asset in ASSETS:
-            try:
-                _fetch(f"{endpoint}/{REPO}/resolve/main/{asset}", dest / asset, dest)
-            except (urllib.error.URLError, TimeoutError):
-                continue  # 可选文件，失败不影响推理
-        _set(dest, state="done", percent=100, current="")
-    except Exception as exc:  # noqa: BLE001
-        _set(dest, state="failed", error=str(exc), current="")
-        raise
-    return download_state(dest)
+    candidates = _endpoints(endpoint)
+    opener = build_opener(proxy)
+    _set(dest, state="running", error="", percent=0, total=0, endpoint=candidates[0])
+
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            _download_from(dest, variant=variant, endpoint=candidate, opener=opener)
+        except Exception as exc:  # noqa: BLE001 - 换下一个下载源
+            errors.append(f"{candidate}: {exc}")
+            _set(dest, error="\n".join(errors), current="", endpoint=candidate)
+            continue
+        _set(dest, state="done", percent=100, current="", error="", endpoint=candidate)
+        return download_state(dest)
+
+    _set(dest, state="failed", error="\n".join(errors), current="")
+    raise RuntimeError("模型下载失败：\n" + "\n".join(errors))
 
 
-def download_async(dest: str | Path, *, variant: str = "fp32", endpoint: str | None = None) -> dict:
+def download_async(
+    dest: str | Path,
+    *,
+    variant: str = "fp32",
+    endpoint: str | None = None,
+    proxy: str | None = None,
+) -> dict:
     dest_path = Path(dest).expanduser()
     status = model_status(dest_path)
     if status["installed"]:
@@ -134,7 +176,7 @@ def download_async(dest: str | Path, *, variant: str = "fp32", endpoint: str | N
 
     def worker() -> None:
         try:
-            download(dest_path, variant=variant, endpoint=endpoint)
+            download(dest_path, variant=variant, endpoint=endpoint, proxy=proxy)
         except Exception:  # noqa: BLE001 - 状态里已记录
             pass
 
@@ -143,10 +185,16 @@ def download_async(dest: str | Path, *, variant: str = "fp32", endpoint: str | N
     return download_state(dest_path)
 
 
-def ensure(dest: str | Path, *, variant: str = "fp32", endpoint: str | None = None) -> bool:
+def ensure(
+    dest: str | Path,
+    *,
+    variant: str = "fp32",
+    endpoint: str | None = None,
+    proxy: str | None = None,
+) -> bool:
     """没有模型就下载（启动时调用）。返回是否可用。"""
     status = model_status(dest)
     if status["installed"]:
         return True
-    download_async(dest, variant=variant, endpoint=endpoint)
+    download_async(dest, variant=variant, endpoint=endpoint, proxy=proxy)
     return False

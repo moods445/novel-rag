@@ -18,6 +18,7 @@ from typing import Protocol
 
 from ..config import Settings
 from ..errors import ProviderError
+from ..net import build_opener
 from . import opencode
 
 ECHO_SENTINEL = "__ECHO__"
@@ -60,6 +61,7 @@ class OpenAICompatProvider:
     name: str = "openai-compat"
     timeout: float = 120.0
     temperature: float = 0.2
+    proxy: str = ""
 
     def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
         if not self.base_url or not self.model:
@@ -82,7 +84,7 @@ class OpenAICompatProvider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with build_opener(self.proxy).open(req, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # 4xx/5xx
             raise ProviderError(f"HTTP {exc.code}", kind="http_error") from exc
@@ -141,6 +143,7 @@ def from_settings(settings: Settings) -> LlmGateway:
             api_key=settings.extract_api_key,
             name=f"extract:{settings.extract_model}",
             timeout=settings.llm_timeout,
+            proxy=settings.network_proxy,
         )
     if settings.query_base_url and settings.query_model:
         query = OpenAICompatProvider(
@@ -149,6 +152,7 @@ def from_settings(settings: Settings) -> LlmGateway:
             api_key=settings.query_api_key,
             name=f"query:{settings.query_model}",
             timeout=settings.llm_timeout_query,
+            proxy=settings.network_proxy,
         )
 
     if (extract is None or query is None) and settings.llm_provider:
@@ -156,6 +160,7 @@ def from_settings(settings: Settings) -> LlmGateway:
             settings.llm_provider,
             settings.llm_model or None,
             path=settings.opencode_config or None,
+            custom=settings.custom_providers or None,
         )
         if spec is not None and model:
             shared = OpenAICompatProvider(
@@ -164,6 +169,7 @@ def from_settings(settings: Settings) -> LlmGateway:
                 api_key=spec.api_key,
                 name=f"{spec.name}:{model}",
                 timeout=settings.llm_timeout,
+                proxy=settings.network_proxy,
             )
             extract = extract or shared
             query = query or OpenAICompatProvider(
@@ -172,6 +178,7 @@ def from_settings(settings: Settings) -> LlmGateway:
                 api_key=spec.api_key,
                 name=f"{spec.name}:{model}",
                 timeout=settings.llm_timeout_query,
+                proxy=settings.network_proxy,
             )
 
     return LlmGateway(

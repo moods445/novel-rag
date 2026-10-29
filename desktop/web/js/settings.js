@@ -16,6 +16,13 @@ export function init(refs) {
     save({ llm_provider: els.llmProvider.value, llm_model: model });
   });
   els.llmModel?.addEventListener('change', () => save({ llm_model: els.llmModel.value }));
+  els.embedEndpoint?.addEventListener('change', () => save({ embedding_endpoint: els.embedEndpoint.value }));
+  els.proxySave?.addEventListener('click', saveProxy);
+  els.providerAdd?.addEventListener('click', addProvider);
+  els.providerList?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-provider]');
+    if (button) removeProvider(button.dataset.provider);
+  });
   els.download?.addEventListener('click', startDownload);
   els.resplit?.addEventListener('click', resplitCurrentBook);
 }
@@ -47,10 +54,17 @@ function fill(data) {
     values.llm_model
   );
 
+  fillSelect(els.embedEndpoint, options.embedding_endpoint, values.embedding_endpoint || '');
+
+  if (els.proxy) els.proxy.value = values.network_proxy || '';
+  renderProviders(options.llm?.providers || []);
+
   if (els.llmConfigPath) {
-    els.llmConfigPath.textContent = options.llm?.config_path
-      ? `配置来源：${options.llm.config_path}`
-      : '未找到 opencode 配置，当前为离线模式';
+    const custom = (options.llm?.providers || []).filter((p) => p.custom).length;
+    els.llmConfigPath.textContent = [
+      options.llm?.config_path ? `配置来源：${options.llm.config_path}` : '未找到 opencode 配置',
+      custom ? `另有 ${custom} 个手动添加的 provider` : '',
+    ].filter(Boolean).join(' · ');
   }
 
   if (els.embedStatus) {
@@ -100,9 +114,78 @@ async function save(patch) {
     if (data.effective) {
       els.effective.textContent = JSON.stringify(data.effective, null, 2);
     }
+    return true;
   } catch (error) {
     alert(`保存失败：${error.message}`);
     await load();
+    return false;
+  }
+}
+
+async function saveProxy() {
+  const proxy = (els.proxy?.value || '').trim();
+  const ok = await save({ network_proxy: proxy });
+  if (els.proxyHint) {
+    els.proxyHint.textContent = ok ? (proxy ? '代理已保存' : '已切回直连') : '保存失败';
+  }
+}
+
+function renderProviders(providers) {
+  if (!els.providerList) return;
+  const custom = providers.filter((p) => p.custom);
+  els.providerList.innerHTML = '';
+  if (!custom.length) {
+    els.providerList.innerHTML = '<li><span class="dim">还没有手动添加的 provider</span></li>';
+    return;
+  }
+  for (const provider of custom) {
+    const item = document.createElement('li');
+    const detail = `${provider.base_url}${provider.has_key ? ' · 已配置 Key' : ' · 无 Key'}`;
+    item.innerHTML = `<span>${escapeHtml(provider.label || provider.name)}</span> ` +
+      `<span class="dim">${escapeHtml(detail)}</span> `;
+    const button = document.createElement('button');
+    button.className = 'btn';
+    button.textContent = '删除';
+    button.dataset.provider = provider.name;
+    item.appendChild(button);
+    els.providerList.appendChild(item);
+  }
+}
+
+async function addProvider() {
+  const name = (els.providerName?.value || '').trim();
+  const baseUrl = (els.providerBaseUrl?.value || '').trim();
+  if (!name || !baseUrl) {
+    els.providerHint.textContent = '名称和 Base URL 必填';
+    return;
+  }
+  els.providerHint.textContent = '保存中…';
+  try {
+    const result = await api.post('/api/providers', {
+      name,
+      base_url: baseUrl,
+      api_key: (els.providerApiKey?.value || '').trim(),
+      models: (els.providerModels?.value || '').trim(),
+    });
+    for (const key of ['providerName', 'providerBaseUrl', 'providerApiKey', 'providerModels']) {
+      if (els[key]) els[key].value = '';
+    }
+    els.providerHint.textContent = '已添加，可在上方选择';
+    await load();
+    if (result.values?.llm_provider) els.effective.textContent = JSON.stringify(result.values, null, 2);
+  } catch (error) {
+    els.providerHint.textContent = `失败：${error.message}`;
+  }
+}
+
+async function removeProvider(name) {
+  if (!window.confirm(`删除 provider「${name}」？`)) return;
+  try {
+    await api.del(`/api/providers/${encodeURIComponent(name)}`);
+    els.providerHint.textContent = `已删除 ${name}`;
+    await load();
+  } catch (error) {
+    els.providerHint.textContent = `删除失败：${error.message}`;
   }
 }
 
@@ -131,7 +214,9 @@ async function resplitCurrentBook() {
 async function startDownload() {
   try {
     els.download.disabled = true;
-    const result = await api.post('/api/models/embedding/download', {});
+    const result = await api.post('/api/models/embedding/download', {
+      endpoint: els.embedEndpoint?.value || null,
+    });
     renderDownload(result.status);
     watchDownload(result);
   } catch (error) {
