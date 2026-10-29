@@ -12,7 +12,7 @@
 #   NOVEL_RAG_PORT=8000           宿主端口
 #   NOVEL_RAG_TOKEN=             设置后开启鉴权（访问用 /#token=xxx）
 #   NOVEL_RAG_DISABLE_AUTH=1     1 = 不校验 token（内网/反代后面才用）
-#   NOVEL_RAG_DATA=novel-rag-data  named volume 名，或宿主绝对路径（bind mount）
+#   NOVEL_RAG_DATA=./data        数据目录，默认在 compose 文件旁边；填普通名字则用命名卷
 #   NOVEL_RAG_EMBED_BACKEND=auto  auto | hash
 services:
   novel-rag:
@@ -28,7 +28,8 @@ services:
       TZ: "${TZ:-Asia/Shanghai}"
     volumes:
       # 数据库、日志、embedding 模型都在 /data，删容器不丢数据
-      - "${NOVEL_RAG_DATA:-novel-rag-data}:/data"
+      # 默认落在 compose 文件旁边的 ./data（deploy.sh 会把它建成容器可写）
+      - "${NOVEL_RAG_DATA:-./data}:/data"
 
 volumes:
   novel-rag-data:

@@ -8,10 +8,11 @@
 #   ./deploy.sh --port 9000              换宿主端口
 #   ./deploy.sh --auth                   开启鉴权（没给 --token 就随机生成并打印）
 #   ./deploy.sh --token mypass --auth    指定口令，访问用 /#token=mypass
-#   ./deploy.sh --data /srv/novel-rag    数据放宿主目录（bind mount）
+#   ./deploy.sh --data /srv/novel-rag    换数据目录（默认 ./data，就在脚本旁边）
 #   ./deploy.sh --embed hash             跳过 100MB 向量模型下载，最省资源
 #   ./deploy.sh status | logs | restart | down | purge
 #
+# 数据默认放在脚本所在目录的 ./data（bind mount，删容器不丢），
 # 参数会写进同目录的 .env（compose 自动读），下次直接 ./deploy.sh 沿用上次设置。
 set -euo pipefail
 
@@ -21,7 +22,7 @@ COMPOSE_FILE="docker-compose.yml"
 ENV_FILE=".env"
 SERVICE="novel-rag"
 DEFAULT_IMAGE="ghcr.io/moods445/novel-rag:latest"
-DEFAULT_DATA="novel-rag-data"
+DEFAULT_DATA="./data"          # 默认就落在脚本旁边
 
 # ---------------------------------------------------------------- 输出
 info() { printf '%s\n' "$*"; }
@@ -46,15 +47,15 @@ usage() {
   -t, --token S      访问口令（隐含开启鉴权）
       --auth         开启鉴权；没给 --token 会随机生成并打印
       --no-auth      关闭鉴权（默认，仅限内网/反代后面）
-  -d, --data PATH    数据目录，默认命名卷 novel-rag-data；给路径则 bind mount
+  -d, --data PATH    数据目录，默认 ./data（脚本旁边）；给普通的词则当命名卷
       --embed MODE   向量检索：auto（默认）/ hash（最省资源）/ bge
       --image IMG    换镜像地址，默认 ghcr.io/moods445/novel-rag:latest
   -h, --help         显示这段帮助
 
 例子:
-  ./deploy.sh                       # 内网直接跑起来
+  ./deploy.sh                       # 内网直接跑起来，数据落在 ./data
   ./deploy.sh --auth --port 9000    # 开鉴权 + 换端口
-  ./deploy.sh --data /srv/nr        # 数据放宿主目录
+  ./deploy.sh --data /srv/nr        # 数据换个地方
 EOF
 }
 
@@ -113,6 +114,21 @@ gen_token() {
   fi
 }
 
+# 容器内以非 root（uid 10001）运行，bind mount 的目录得让它写得进去
+ensure_data_writable() {
+  local dir="$1"
+  if [ "$(id -u)" = "0" ]; then
+    chown -R 10001:10001 "$dir" 2>/dev/null || true
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n chown -R 10001:10001 "$dir" 2>/dev/null || true
+  fi
+  # 既不是 10001 的、也没有 others write 才放宽（自建数据目录，代价可控）
+  if [ -z "$(find "$dir" -maxdepth 0 \( -perm -o+w -o -uid 10001 \) 2>/dev/null)" ]; then
+    chmod -R a+rwX "$dir" 2>/dev/null || true
+    info "已把 $dir 放宽到容器内的 uid 10001 可写"
+  fi
+}
+
 # 参数 > .env > 默认值
 PORT="${arg_port:-$(env_get NOVEL_RAG_PORT)}";             PORT="${PORT:-8000}"
 TOKEN="${arg_token:-$(env_get NOVEL_RAG_TOKEN)}"
@@ -144,7 +160,10 @@ if [ "$DISABLE_AUTH" = "0" ] && [ -z "$TOKEN" ]; then
   info "已生成访问口令：$TOKEN"
 fi
 
-# bind mount 的数据目录先建好（容器内是 uid 10001）
+# 数据目录：默认 ./data（脚本旁边）。bind mount 要提前建好并让容器内 uid 10001 能写
+case "$DATA" in
+  "~"*) DATA="${HOME}${DATA#\~}" ;;
+esac
 case "$DATA" in
   /*|.*|*/*)
     case "$DATA" in
@@ -152,12 +171,11 @@ case "$DATA" in
       *)  DATA_ABS="$(pwd)/${DATA#./}" ;;
     esac
     mkdir -p "$DATA_ABS" || die "建不了数据目录：$DATA_ABS"
-    if [ "$(id -u)" = "0" ]; then
-      chown -R 10001:10001 "$DATA_ABS" 2>/dev/null || true
-    else
-      warn "bind mount 的数据目录由容器内 uid 10001 写入，若启动报权限错误：sudo chown -R 10001:10001 $DATA_ABS"
-    fi
+    ensure_data_writable "$DATA_ABS"
     DATA="$DATA_ABS"
+    ;;
+  *)
+    warn "--data $DATA 当命名卷处理，数据不在脚本目录；想落在本地就 --data ./data"
     ;;
 esac
 

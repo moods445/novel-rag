@@ -19,6 +19,9 @@ novel-rag.db*
 # deploy.sh 写出来的部署参数（含端口/口令，不入库）
 .env
 
+# deploy.sh 默认的数据目录（数据库、日志、embedding 模型）
+/data/
+
 # 上游源码快照（见 docs/anx-reader/README.md）
 anx-reader/
 AI-Reader-V2/

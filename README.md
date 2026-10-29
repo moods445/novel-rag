@@ -88,12 +88,16 @@ docker run -d --name novel-rag -p 8000:8000 \
 打印访问地址，常用动作都在里面：
 
 ```bash
-./deploy.sh                          # 内网直接跑起来（免鉴权，8000 端口）
+./deploy.sh                          # 内网直接跑起来（免鉴权，8000 端口，数据在 ./data）
 ./deploy.sh --auth --port 9000       # 开鉴权（随机口令会打印出来）+ 换端口
-./deploy.sh --data /srv/novel-rag    # 数据放宿主目录（bind mount）
+./deploy.sh --data /srv/novel-rag    # 数据换个地方（默认就在脚本旁边的 ./data）
 ./deploy.sh --embed hash             # 跳过 100MB 向量模型下载
 ./deploy.sh status | logs | restart | down | purge
 ```
+
+数据默认落在脚本同目录的 `./data`（数据库、日志、embedding 模型都在里面），删容器不丢；
+脚本会把目录建好并放宽给容器内的 uid 10001 写。不用 `deploy.sh` 时，
+`docker-compose.yml` 的同名默认值也是 `./data`（相对 compose 文件所在目录）。
 
 也可以直接用 `docker-compose.yml`（**故意不写 `build:`**，只 pull；参数走 `.env`）：
 
@@ -110,7 +114,7 @@ docker compose pull && docker compose up -d
 
 | 环境变量 | 说明 |
 |---|---|
-| `NOVEL_RAG_HOME` | 数据目录（镜像内 `/data`，挂卷保留库/日志/模型） |
+| `NOVEL_RAG_HOME` | 数据目录（镜像内 `/data`，宿主默认挂到 `./data`） |
 | `NOVEL_RAG_WEB_ROOT` | 静态前端目录（镜像内 `/app/web`，已内置） |
 | `NOVEL_RAG_TOKEN` | 开启鉴权；访问时用 `http://<host>:8000/#token=<token>`，首次会记进 localStorage |
 | `NOVEL_RAG_DISABLE_AUTH` | `1` = 不校验 token。**只在受信网络 / 反向代理后面用** |
@@ -120,11 +124,12 @@ docker compose pull && docker compose up -d
 镜像内置 `HEALTHCHECK`（探 `/api/health`），`docker ps` 能看到 healthy。
 首次启动会后台下载 BGE 向量模型；想跳过就用 `NOVEL_RAG_EMBED_BACKEND=hash`。
 
-本地验证完记得删掉镜像（不留在本机）：
+本地验证完记得删掉镜像和数据（不留在本机）：
 
 ```bash
+./deploy.sh purge                                  # 删容器 + 数据
 docker rmi ghcr.io/moods445/novel-rag:latest
-docker volume rm novel-rag-data
+rm -rf ./data                                      # 数据目录（默认在脚本旁边）
 ```
 
 ## 快速开始
