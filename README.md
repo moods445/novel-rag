@@ -84,8 +84,8 @@ docker run -d --name novel-rag -p 8000:8000 \
 # 浏览器打开 http://127.0.0.1:8000/
 ```
 
-**一键部署**（推荐）：`deploy.sh` 会把参数写进 `.env`，拉镜像、起容器、等健康检查、
-打印访问地址，常用动作都在里面：
+**一键部署**（推荐）：`deploy.sh` 是**单文件部署**——把它单独拷到任何目录都能跑，
+`docker-compose.yml` 和 `.env` 由它按参数现生成，然后拉镜像、起容器、等健康检查、打印访问地址：
 
 ```bash
 ./deploy.sh                          # 内网直接跑起来（免鉴权，8000 端口，数据在 ./data）
@@ -95,11 +95,11 @@ docker run -d --name novel-rag -p 8000:8000 \
 ./deploy.sh status | logs | restart | down | purge
 ```
 
-数据默认落在脚本同目录的 `./data`（数据库、日志、embedding 模型都在里面），删容器不丢；
-脚本会把目录建好并放宽给容器内的 uid 10001 写。不用 `deploy.sh` 时，
-`docker-compose.yml` 的同名默认值也是 `./data`（相对 compose 文件所在目录）。
+执行后脚本同目录会有三样东西（都已 gitignore 或可随时重生成）：
+`docker-compose.yml`（生成物，手改会被下次执行覆盖）、`.env`（参数，下次沿用）、
+`data/`（数据库、日志、embedding 模型，删容器不丢；脚本会把目录建好并放宽给容器内 uid 10001 写）。
 
-也可以直接用 `docker-compose.yml`（**故意不写 `build:`**，只 pull；参数走 `.env`）：
+仓库里也带了一份内容相同的 `docker-compose.yml`，不用脚本时可以直接：
 
 ```bash
 docker compose pull && docker compose up -d
