@@ -84,7 +84,18 @@ docker run -d --name novel-rag -p 8000:8000 \
 # 浏览器打开 http://127.0.0.1:8000/
 ```
 
-或者用 `docker-compose.yml`（**故意不写 `build:`**，只 pull）：
+**一键部署**（推荐）：`deploy.sh` 会把参数写进 `.env`，拉镜像、起容器、等健康检查、
+打印访问地址，常用动作都在里面：
+
+```bash
+./deploy.sh                          # 内网直接跑起来（免鉴权，8000 端口）
+./deploy.sh --auth --port 9000       # 开鉴权（随机口令会打印出来）+ 换端口
+./deploy.sh --data /srv/novel-rag    # 数据放宿主目录（bind mount）
+./deploy.sh --embed hash             # 跳过 100MB 向量模型下载
+./deploy.sh status | logs | restart | down | purge
+```
+
+也可以直接用 `docker-compose.yml`（**故意不写 `build:`**，只 pull；参数走 `.env`）：
 
 ```bash
 docker compose pull && docker compose up -d

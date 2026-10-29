@@ -1,29 +1,34 @@
 # Web 部署（Docker）。
 #
-# 镜像只在 GitHub Actions 里构建、推送到 ghcr.io（见 .github/workflows/docker.yml）。
-# 这里**故意不写 build:**，本地只 pull 不 build：
+# 镜像只在 GitHub Actions 里构建、推送到 ghcr.io（见 .github/workflows/docker.yml），
+# 这里**故意不写 build:**，本地只 pull 不 build。
 #
+# 手动用：
 #   docker compose pull && docker compose up -d
-#   浏览器打开 http://127.0.0.1:8000/
+# 一键用（推荐，会写好 .env 并等健康检查）：
+#   ./deploy.sh
+#
+# 可调项都走 .env（deploy.sh 会生成/覆盖它）：
+#   NOVEL_RAG_PORT=8000           宿主端口
+#   NOVEL_RAG_TOKEN=             设置后开启鉴权（访问用 /#token=xxx）
+#   NOVEL_RAG_DISABLE_AUTH=1     1 = 不校验 token（内网/反代后面才用）
+#   NOVEL_RAG_DATA=novel-rag-data  named volume 名，或宿主绝对路径（bind mount）
+#   NOVEL_RAG_EMBED_BACKEND=auto  auto | hash
 services:
   novel-rag:
-    image: ghcr.io/moods445/novel-rag:latest
-    container_name: novel-rag
+    image: ${NOVEL_RAG_IMAGE:-ghcr.io/moods445/novel-rag:latest}
+    container_name: ${NOVEL_RAG_CONTAINER:-novel-rag}
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${NOVEL_RAG_PORT:-8000}:8000"
     environment:
-      # 内网/本机直接用：关掉 token。要对外暴露时注释掉这行，改用下面的 TOKEN。
-      NOVEL_RAG_DISABLE_AUTH: "1"
-      # NOVEL_RAG_TOKEN: "change-me"        # 之后用 http://<host>:8000/#token=change-me 打开
-      # 向量检索：auto（缺模型就后台下载，约 100MB）| hash（占位向量，最省资源）
-      NOVEL_RAG_EMBED_BACKEND: "auto"
-      # 网络代理（下载模型 / 调 LLM 用），直连就删掉
-      # NOVEL_RAG_PROXY: "http://127.0.0.1:7890"
-      TZ: Asia/Shanghai
+      NOVEL_RAG_DISABLE_AUTH: "${NOVEL_RAG_DISABLE_AUTH:-1}"
+      NOVEL_RAG_TOKEN: "${NOVEL_RAG_TOKEN:-}"
+      NOVEL_RAG_EMBED_BACKEND: "${NOVEL_RAG_EMBED_BACKEND:-auto}"
+      TZ: "${TZ:-Asia/Shanghai}"
     volumes:
       # 数据库、日志、embedding 模型都在 /data，删容器不丢数据
-      - novel-rag-data:/data
+      - "${NOVEL_RAG_DATA:-novel-rag-data}:/data"
 
 volumes:
   novel-rag-data:
