@@ -114,23 +114,29 @@ jobs:
             -e NOVEL_RAG_DISABLE_AUTH=1 \
             -e NOVEL_RAG_EMBED_BACKEND=hash \
             "$IMAGE"
-          cleanup() { docker rm -f novelrag-smoke >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
+          trap 'docker rm -f novelrag-smoke >/dev/null 2>&1 || true' EXIT
+
+          fail() { echo "::error::$1"; docker logs novelrag-smoke 2>&1 | tail -30 || true; exit 1; }
 
           ok=0
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/api/health > health.json 2>/dev/null; then ok=1; break; fi
+            if curl -fsS -o health.json http://127.0.0.1:8000/api/health 2>/dev/null; then ok=1; break; fi
             sleep 1
           done
-          if [ "$ok" != "1" ]; then
-            echo "::error::镜像启动后 /api/health 不通"
-            docker logs novelrag-smoke || true
-            exit 1
-          fi
-          grep -q '"ok"' health.json
-          curl -fsS http://127.0.0.1:8000/ | grep -q 'Novel RAG'
-          curl -fsS http://127.0.0.1:8000/js/app.js | grep -q 'sameOrigin'
-          docker inspect --format '{{.State.Health.Status}}' novelrag-smoke || true
+          [ "$ok" = "1" ] || fail "镜像启动后 /api/health 不通"
+          grep -q '"ok"' health.json || fail "/api/health 返回异常（见 health.json）"
+
+          # 静态前端：首页、同源客户端、阅读引擎（foliate-js 是构建期拉取的，最容易漏）
+          check() {  # path pattern label
+            curl -fsS -o body.tmp "http://127.0.0.1:8000$1" || fail "$3 拉取失败（$1）"
+            grep -q -- "$2" body.tmp || fail "$3 内容不符（$1）"
+            echo "ok: $3"
+          }
+          check / 'Novel RAG' "index.html"
+          check /js/api.js 'sameOrigin' "同源 Web 客户端"
+          check /vendor/foliate-js/view.js 'customElements' "foliate-js 阅读引擎"
+
+          docker inspect --format 'health={{.State.Health.Status}}' novelrag-smoke || true
           echo "image smoke ok: $IMAGE"
 
       - name: Summarize
