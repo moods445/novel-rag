@@ -16,6 +16,12 @@
 - [x] CI：`.github/workflows/docker.yml` 在 Actions 构建 amd64/arm64 推 ghcr + 启动烟测（本地禁止构建）
 - [x] 验证：CI 跑通（run 40852721727 绿），本地 pull 镜像实测（healthy / 导入 121 章 / 同源 Web / 阅读键盘 / 对话面板隐藏），测完删除容器+卷+镜像
 - [x] 后端：新增 `tests/test_web_static.py`（静态托管、穿越防护、/api 仍要 token），全套 134 通过
+- [x] 阅读：键盘加固 —— 主文档 capture 绑键、iframe 焦点双绑、连按串行排队（不再被 foliate 换章锁丢键）、渲染器未就绪不吞键、新增 PgUp/PgDn/空格翻屏、无书时给提示
+- [x] 阅读：换书先 `view.close()`，不再往 shadow DOM 里堆渲染器；load/relocate 只绑一次
+- [x] 阅读：刷新安全 —— 书架/进度/防剧透都在服务端，前端记住上次的书，刷新后自动恢复书与 CFI 位置（滚动过程节流存 CFI）
+- [x] 导入：书架上方进度条（读文件 → 编码 → 上传真实百分比 → 服务端分章不确定态 → 完成/失败），完成后写明章节数与可刷新说明
+- [x] 验证：网页端 playwright 实测（`novels/三国演义.txt` 121 章）—— 导入进度四段、←→/↑↓/PgUp/PgDn/空格、iframe 内按键、连按 5 次不丢、刷新两次回到原位、重开同一本书
+- [x] 文档：README 增「阅读页（键盘 / 刷新 / 导入进度）」，并说明 foliate sandbox 控制台警告无害
 
 # 待确认
 

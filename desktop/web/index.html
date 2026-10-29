@@ -50,6 +50,20 @@
             支持 TXT / EPUB 文本文件（自动识别 UTF-8 / GB18030 / UTF-16）。导入后立即在后台建立知识库，
             期间也能正常阅读与提问。
           </p>
+          <p class="hint">
+            书架、阅读位置、防剧透开关都存在服务端，<strong>随时可以刷新页面</strong>；
+            刷新后会自动回到上次读的那本书和位置。
+          </p>
+
+          <div id="import-panel" class="import-panel" hidden>
+            <div class="import-head">
+              <span id="import-stage">准备导入…</span>
+              <span id="import-percent" class="hint"></span>
+            </div>
+            <div class="progress"><div id="import-bar"></div></div>
+            <div id="import-detail" class="hint"></div>
+          </div>
+
           <div id="book-list" class="book-grid"></div>
         </section>
 
@@ -61,7 +75,7 @@
               <span class="hint" id="reader-progress"></span>
             </div>
             <div class="actions">
-              <span class="hint reader-keys">← → 翻屏 · ↑ ↓ 滚动</span>
+              <span class="hint reader-keys" title="点一下正文再按键；← → 翻一屏，↑ ↓ 滚动，PgUp/PgDn 与空格也能翻屏">← → 翻屏 · ↑ ↓ 滚动</span>
               <select id="toc-select" class="select" title="目录"></select>
               <button class="btn" id="btn-prev">上一章</button>
               <button class="btn" id="btn-next">下一章</button>

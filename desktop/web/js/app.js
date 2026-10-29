@@ -13,6 +13,11 @@ const els = {
   themeToggle: $('theme-toggle'),
   bookList: $('book-list'),
   fileInput: $('file-input'),
+  importPanel: $('import-panel'),
+  importStage: $('import-stage'),
+  importPercent: $('import-percent'),
+  importBar: $('import-bar'),
+  importDetail: $('import-detail'),
   readerTitle: $('reader-title'),
   readerProgress: $('reader-progress'),
   readerEmpty: $('reader-empty'),
@@ -145,12 +150,28 @@ function isTypingTarget(target) {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
+/**
+ * 键盘绑两层：
+ *  - 主文档 capture 阶段（比 foliate / 输入法更早拿到事件，避免被别人 preventDefault 抢走）；
+ *  - 正文 iframe 的 document（foliate 每个章节一个 iframe，见 reader.js 的 bindKeysToDoc）。
+ * 阅读页没有书的时候也给个提示，免得以为"刷新后键盘坏了"。
+ */
 function bindReaderKeys() {
-  window.addEventListener('keydown', (event) => {
-    if (state.view !== 'read' || !state.reader) return;
-    if (isTypingTarget(event.target)) return;
-    state.reader.handleKeyEvent(event);
-  });
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (state.view !== 'read') return;
+      if (isTypingTarget(event.target)) return;
+      if (!state.book || !state.reader) {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+          els.status.textContent = '先点书架里的一本书，再按 ← → / ↑ ↓ 翻屏与滚动';
+        }
+        return;
+      }
+      state.reader.handleKeyEvent(event);
+    },
+    true
+  );
 }
 
 function handleSpoilerChange(value) {
@@ -336,10 +357,52 @@ async function boot() {
   });
 
   await Promise.all([loadBooks(), settings.load().catch(() => {})]);
+  await restoreLastBook();
   setInterval(() => {
     if (state.view === 'analysis') analysis.refreshTask();
     if (state.view === 'shelf') refreshShelf();
   }, 4000);
+}
+
+const LAST_BOOK_KEY = 'novelrag-last-book';
+
+function rememberBook(id) {
+  try {
+    if (id) localStorage.setItem(LAST_BOOK_KEY, id);
+    else localStorage.removeItem(LAST_BOOK_KEY);
+  } catch {
+    /* 隐私模式下不可写，忽略 */
+  }
+}
+
+function lastBookId() {
+  try {
+    return localStorage.getItem(LAST_BOOK_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 刷新页面后自动回到上次读的那本书（位置由服务端 progress_cfi 恢复）。
+ * 书被删了/解析失败就静默退回书架，不能因此把启动流程卡住。
+ */
+async function restoreLastBook() {
+  const id = lastBookId();
+  if (!id) return;
+  const book = state.books.find((b) => b.id === id);
+  if (!book) {
+    rememberBook('');
+    return;
+  }
+  const ok = await selectBook(book);
+  if (!ok) {
+    rememberBook('');
+    return;
+  }
+  if (!els.status.classList.contains('bad')) {
+    els.status.textContent = `已恢复上次阅读：${book.title}（随时可刷新页面）`;
+  }
 }
 
 // ---------------------------------------------------------------- 导航
@@ -377,22 +440,92 @@ function bindShelf() {
   });
 }
 
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i += 1;
+  }
+  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * 导入进度条。四段：读文件 → 编码 → 上传（真实百分比）→ 服务端分章（不确定态）。
+ * 后端是一次性同步解析，第二段拿不到真实百分比，所以只做"还在动"的不确定态。
+ */
+function setImport({ stage, percent = 0, detail = '', bad = false, indeterminate = false }) {
+  const panel = els.importPanel;
+  if (!panel) return;
+  panel.hidden = false;
+  panel.classList.toggle('bad', Boolean(bad));
+  if (els.importStage) els.importStage.textContent = stage;
+  if (els.importPercent) {
+    els.importPercent.textContent = indeterminate ? '处理中' : `${Math.round(percent)}%`;
+  }
+  if (els.importBar) {
+    els.importBar.classList.toggle('indeterminate', Boolean(indeterminate));
+    if (!indeterminate) els.importBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  }
+  if (els.importDetail) els.importDetail.textContent = detail;
+}
+
 async function importFile(file) {
+  els.status.classList.remove('bad');
   els.status.textContent = `导入 ${file.name}…`;
+  const size = formatBytes(file.size);
   try {
+    setImport({ stage: `读取 ${file.name}（${size}）…`, percent: 4, detail: '文件只在本机读，编码后一次性上传给本地后端。' });
     const buffer = await file.arrayBuffer();
-    const result = await api.post('/api/books', {
-      filename: file.name,
-      content_base64: base64FromArrayBuffer(buffer),
-      title: file.name.replace(/\.[^.]+$/, ''),
+
+    setImport({ stage: '编码中…', percent: 12, detail: `${size} → base64，大文件需要几秒。` });
+    // 让浏览器先把进度条画出来，再跑同步的 base64 编码
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const content_base64 = base64FromArrayBuffer(buffer);
+
+    setImport({ stage: '上传中…', percent: 20, detail: 'POST /api/books' });
+    const result = await api.postWithProgress(
+      '/api/books',
+      {
+        filename: file.name,
+        content_base64,
+        title: file.name.replace(/\.[^.]+$/, ''),
+      },
+      (ratio) => {
+        // 上传占 20%~85%，剩下的是服务端分章解析
+        setImport({
+          stage: '上传中…',
+          percent: 20 + ratio * 65,
+          detail: `已传 ${formatBytes(file.size * ratio)} / ${size}`,
+        });
+      }
+    );
+
+    setImport({
+      stage: '服务端分章中…',
+      percent: 90,
+      indeterminate: true,
+      detail: '上传已完成，正在识别章节；这一步耗时取决于文件大小。',
     });
+
     els.status.textContent = `已导入：${result.chapter_count} 章 / ${result.paragraph_count} 段`;
     await loadBooks();
     const book = state.books.find((b) => b.id === result.book.id);
     if (book) await selectBook(book);
+    setImport({
+      stage: '导入完成',
+      percent: 100,
+      detail: `${result.chapter_count} 章 / ${result.paragraph_count} 段，已开始后台建知识库。可以刷新页面，阅读位置已存服务端。`,
+    });
+    setTimeout(() => {
+      if (els.importPanel) els.importPanel.hidden = true;
+    }, 6000);
   } catch (error) {
     els.status.classList.add('bad');
     els.status.textContent = `导入失败：${error.message}`;
+    setImport({ stage: '导入失败', percent: 100, bad: true, detail: error.message });
   }
 }
 
@@ -468,16 +601,19 @@ async function selectBook(book) {
     chat.setBook(book);
     chat.setProgress(state.progressSeq);
     chat.setSpoilerGuard(progress.spoiler_guard !== 0);
-    await openReader(book);
+    await openReader(book, progress);
     fillToc();
     showView('read');
+    rememberBook(book.id);
+    return true;
   } catch (error) {
     els.status.classList.add('bad');
     els.status.textContent = `打开失败：${error.message}`;
+    return false;
   }
 }
 
-async function openReader(book) {
+async function openReader(book, progress) {
   try {
     if (!state.reader) {
       state.reader = await import('./reader.js');
@@ -489,7 +625,9 @@ async function openReader(book) {
     throw error;
   }
   state.reader.setBook(book.id, state.chapters);
+  // 续读：服务端存的是 CFI（渲染坐标），换设备/刷新都能落回原处
   await state.reader.open(book, {
+    lastCfi: (progress && progress.progress_cfi) || '',
     onRelocate: (detail, chapter) => {
       if (chapter && chapter.seq_end) {
         state.progressSeq = chapter.seq_end;

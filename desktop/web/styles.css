@@ -323,6 +323,59 @@ main {
   background: var(--accent);
 }
 
+/* 导入进度：一次导入一条，失败标红但不消失（要能看清原因） */
+.import-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 12px 0 4px;
+  max-width: 560px;
+}
+
+.import-panel[hidden] {
+  display: none;
+}
+
+.import-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.import-panel .progress {
+  margin-top: 8px;
+}
+
+.import-panel .progress > div.indeterminate {
+  width: 35% !important;
+  animation: import-slide 1.1s ease-in-out infinite;
+}
+
+.import-panel.bad {
+  border-color: #b4544f;
+}
+
+.import-panel.bad .progress > div {
+  background: #b4544f;
+}
+
+.import-panel #import-detail {
+  margin-top: 7px;
+  line-height: 1.5;
+}
+
+@keyframes import-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 /* ---------------------------------------------------------------- 阅读 */
 
 .read-body {

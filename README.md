@@ -153,6 +153,32 @@ curl -H 'Authorization: Bearer devtoken' -H 'Content-Type: application/json' \
   http://127.0.0.1:8793/api/ask
 ```
 
+## 阅读页（键盘 / 刷新 / 导入进度）
+
+**键盘**（焦点在正文或页面上都行，点一下正文更稳）：
+
+| 按键 | 行为 |
+|---|---|
+| `←` `→` / `PgUp` `PgDn` / `空格` | 翻一屏，到章尾自动交接下一章 |
+| `↑` `↓` | 滚动约 1/6 屏，跨章连续 |
+
+连按不会丢键（前端把每次翻屏串行排队；foliate-js 内部换章时有一把 100ms 的锁，
+旧实现里锁住期间的按键会被静默丢掉）。焦点在输入框/下拉框里时不抢键。
+
+**刷新页面是安全的**：书架、阅读位置（`progress_seq` + `progress_cfi`）、防剧透开关
+都存在服务端 SQLite 里，刷新后会自动回到上次读的那本书和位置；后台建知识库的任务跑在
+服务端线程上，刷新/关页面都不影响，回来继续看覆盖度即可。
+
+**导入进度**：导入时书架上方有一条进度条，分四段 —— 读文件 → base64 编码 →
+上传（真实百分比，来自 `XMLHttpRequest.upload`）→ 服务端分章（不确定态动画，
+这一步是一次性同步解析，拿不到真实百分比）。完成/失败都会写明章节数与原因。
+
+> 控制台里的 `An iframe which has both allow-scripts and allow-same-origin for its
+> sandbox attribute can escape its sandboxing.` 是 foliate-js 给正文 iframe 设的
+> sandbox（`desktop/web/vendor/foliate-js/paginator.js`）触发的浏览器提示，**不是错误、
+> 不影响键盘与滚动**：`allow-scripts` 是 WebKit 下 iframe 内事件能工作的前提，
+> `allow-same-origin` 是注入主题、取选区、绑键盘的前提，两者都不能去掉。
+
 ## 模型准备
 
 三个"模型"各管一件事，都可以在界面（HTTP 接口）里切换：

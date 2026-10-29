@@ -41,9 +41,45 @@ async function request(path, { method = 'GET', body } = {}) {
   return res;
 }
 
+/**
+ * 带上传进度的 POST。fetch 拿不到请求体进度，导入大 TXT 时只能干等，
+ * 所以这里退回 XHR：``onProgress`` 收到 0~1 的上传比例（服务端开始解析后不再回调）。
+ */
+function requestWithProgress(path, body, onProgress) {
+  if (!isReady()) return Promise.reject(new Error('本地后端尚未就绪'));
+  const payload = JSON.stringify(body ?? {});
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint(path));
+    if (backend.token) xhr.setRequestHeader('Authorization', `Bearer ${backend.token}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.upload.onprogress = (event) => {
+      if (typeof onProgress !== 'function') return;
+      onProgress(event.lengthComputable && event.total ? event.loaded / event.total : 0);
+    };
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+      } catch {
+        data = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data ?? {});
+        return;
+      }
+      reject(new Error((data && data.error) || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('网络中断（上传失败）'));
+    xhr.onabort = () => reject(new Error('已取消'));
+    xhr.send(payload);
+  });
+}
+
 export const api = {
   get: async (path) => (await request(path)).json(),
   post: async (path, body) => (await request(path, { method: 'POST', body: body ?? {} })).json(),
+  postWithProgress: (path, body, onProgress) => requestWithProgress(path, body, onProgress),
   put: async (path, body) => (await request(path, { method: 'PUT', body: body ?? {} })).json(),
   del: async (path) => (await request(path, { method: 'DELETE' })).json(),
   blob: async (path) => (await request(path)).blob(),

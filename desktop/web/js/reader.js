@@ -9,12 +9,17 @@ let view = null;
 let chapters = [];
 let bookId = null;
 let lastSeq = 0;
+// 最近一次上报的 CFI：滚动到哪就记到哪，刷新后能落回原位置而不是章节开头
+let lastCfi = '';
 let pending = null;
 let theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
 // 阅读流：默认 scrolled（连贯滚动，正文一条长卷），↑↓ 分步滚动、←→ 翻一屏。
 let flow = 'scrolled';
 // 键盘绑定的 iframe 文档集合，每次换章 foliate 都会新建 iframe，需要重复绑定。
 const boundDocs = new WeakSet();
+// foliate 的 load/relocate 只绑一次，换书时用这里的钩子转给调用方。
+let wired = false;
+let relocateHook = null;
 
 export async function ensureView(element) {
   if (view) return view;
@@ -27,6 +32,9 @@ export async function ensureView(element) {
 export function setBook(id, chapterList) {
   bookId = id;
   chapters = chapterList || [];
+  // 换书：上一本的位置不能当成本书的起点
+  lastSeq = 0;
+  lastCfi = '';
 }
 
 /** 全局明暗主题切换后，把正文 iframe 的底色与字色一起换掉。 */
@@ -62,33 +70,59 @@ export function chapterAtSpine(spine) {
   return chapters.find((c) => c.spine_index === spine) || null;
 }
 
-export async function open(book, { onRelocate } = {}) {
+export async function open(book, { onRelocate, lastCfi: resumeCfi } = {}) {
   const blob = await api.blob(`/api/books/${book.id}/epub`);
   const file = new File([blob], `${book.title || 'book'}.epub`, {
     type: 'application/epub+zip',
   });
+  // 换书：先把旧渲染器和旧 iframe 拆掉，否则 shadow DOM 里会一层层堆渲染器，
+  // 旧 iframe 的键盘监听也跟着残留。
+  if (view.book) {
+    try {
+      view.close();
+    } catch (error) {
+      console.warn('close previous book failed', error);
+    }
+  }
   await view.open(file);
-  view.addEventListener('load', (event) => {
-    bindKeysToDoc(event.detail?.doc);
-  });
-  // 先定好排版再 init：第一次渲染就是连贯滚动，且从正文第一屏开始。
+  relocateHook = typeof onRelocate === 'function' ? onRelocate : null;
+  if (!wired) {
+    wired = true;
+    view.addEventListener('load', (event) => bindKeysToDoc(event.detail?.doc));
+    view.addEventListener('relocate', (event) => onRelocateEvent(event.detail || {}));
+  }
+  // 先定好排版再 init：第一次渲染就是连贯滚动。
   applyFlow();
-  await view.init({ showTextStart: true });
+  // 刷新/重开时从服务端存下的 CFI 续读，解析不了才退回正文第一屏。
+  if (!(resumeCfi && (await initAt(resumeCfi)))) await view.init({ showTextStart: true });
   applyTheme(theme);
   bindKeysToDoc(view.renderer?.getContents?.()[0]?.doc);
 
-  view.addEventListener('relocate', (event) => {
-    const detail = event.detail || {};
-    const chapter = chapterAtSpine(spineOfCfi(detail.cfi));
-    const seq = chapter && chapter.seq_end ? chapter.seq_end : 0;
-    if (seq && seq !== lastSeq) {
-      lastSeq = seq;
-      saveProgress(seq, detail.cfi || '');
-    }
-    if (typeof onRelocate === 'function') onRelocate(detail, chapter);
-  });
-
   return view;
+}
+
+async function initAt(cfi) {
+  try {
+    if (!view?.resolveNavigation(cfi)) return false;
+    await view.init({ lastLocation: cfi });
+    return true;
+  } catch (error) {
+    console.warn('restore position failed', error);
+    return false;
+  }
+}
+
+function onRelocateEvent(detail) {
+  const cfi = detail.cfi || '';
+  const chapter = chapterAtSpine(spineOfCfi(cfi));
+  const seq = chapter && chapter.seq_end ? chapter.seq_end : 0;
+  // 章节变了要存（seq 是防剧透的上界），同一章里滚动过也要存（CFI 决定续读落点）。
+  if (cfi && (cfi !== lastCfi || (seq && seq !== lastSeq))) {
+    lastCfi = cfi;
+    if (seq) lastSeq = seq;
+    saveProgress(seq || lastSeq, cfi);
+  }
+  if (relocateHook) relocateHook(detail, chapter);
 }
 
 function saveProgress(seq, cfi) {
@@ -191,16 +225,28 @@ function blockedAtEdge(direction) {
   return !room;
 }
 
-async function turn(direction, distance) {
-  if (!view || typeof view.next !== 'function') return;
-  if (blockedAtEdge(direction)) return;
-  try {
+// 连按排队：foliate 的 #turnPage 内部有锁，锁住期间的调用会被静默丢弃
+//（换章 + 100ms 动画期间正好是锁住的），表现就是"快速连按/连按几下才动一下"。
+// 这里把每次按键串成一条链，前一次做完再做下一次，键不丢。
+let chain = Promise.resolve();
+
+function enqueue(task) {
+  chain = chain.then(task).catch((error) => {
+    console.warn('reader action failed', error);
+    return false;
+  });
+  return chain;
+}
+
+function turn(direction, distance) {
+  return enqueue(async () => {
+    if (!view || typeof view.next !== 'function' || !view.renderer) return false;
+    if (blockedAtEdge(direction)) return false;
     // 自定义距离 = 滚动；不传距离 = 翻一屏。foliate 内部会跨章交接。
     if (direction > 0) await view.next(distance);
     else await view.prev(distance);
-  } catch (error) {
-    console.warn('turn failed', direction, error);
-  }
+    return true;
+  });
 }
 
 export function pageNext() {
@@ -220,41 +266,68 @@ export function scrollByStep(direction) {
   return turn(direction, stepSize());
 }
 
-/** ←→ 翻一屏，↑↓ 滚动；其他键放行。返回是否已经处理。 */
+/**
+ * ←→ / PgDn / 空格 翻一屏，↑↓ 滚动，其他键放行。返回是否已经处理。
+ *
+ * 渲染器还没起来时**不吞键**（返回 false，preventDefault 也不做），
+ * 否则打开书的前几秒按什么都没反应，看着就像"键盘失效"。
+ * 输入框/可编辑区里一律放行，否则对话框里的方向键会被抢走。
+ */
 export function handleKeyEvent(event) {
-  if (!view || event.defaultPrevented) return false;
+  if (!view || !view.renderer || event.defaultPrevented) return false;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
-  const tag = event.target?.tagName;
+  const target = event.target;
+  const tag = target?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
-  switch (event.key) {
-    case 'ArrowRight':
-      event.preventDefault();
-      pageNext();
-      return true;
-    case 'ArrowLeft':
-      event.preventDefault();
-      pagePrev();
-      return true;
-    case 'ArrowDown':
-      event.preventDefault();
-      scrollByStep(1);
-      return true;
-    case 'ArrowUp':
-      event.preventDefault();
-      scrollByStep(-1);
-      return true;
-    default:
-      return false;
+  if (target?.isContentEditable) return false;
+
+  const key = event.key || '';
+  const code = event.code || '';
+  const is = (...names) => names.includes(key) || names.includes(code);
+
+  if (is('ArrowRight', 'PageDown', 'Space')) {
+    event.preventDefault();
+    pageNext();
+    return true;
   }
+  if (is('ArrowLeft', 'PageUp')) {
+    event.preventDefault();
+    pagePrev();
+    return true;
+  }
+  if (is('ArrowDown')) {
+    event.preventDefault();
+    scrollByStep(1);
+    return true;
+  }
+  if (is('ArrowUp')) {
+    event.preventDefault();
+    scrollByStep(-1);
+    return true;
+  }
+  return false;
 }
 
-/** 正文 iframe 内的按键不会冒泡到主文档，得逐个 doc 绑。 */
+/**
+ * 正文 iframe 内的按键不会冒泡到主文档，得逐个 doc 绑。
+ *
+ * 注意 foliate 给正文 iframe 加了 `sandbox="allow-same-origin allow-scripts"`，
+ * 浏览器控制台会提示 "An iframe which has both allow-scripts and allow-same-origin
+ * ... can escape its sandboxing"。这是 foliate-js 有意的设置（见 vendor 的
+ * paginator.js）：`allow-scripts` 是 WebKit 下 iframe 内事件能工作的前提，
+ * `allow-same-origin` 是本文件注入主题、取选区、绑键盘的前提。两者都不能去掉，
+ * 警告本身只是一条提示，不影响滚动/翻屏；正文来自用户自己导入的 EPUB，风险可控。
+ */
 function bindKeysToDoc(doc) {
   if (!doc || boundDocs.has(doc)) return;
   boundDocs.add(doc);
-  doc.addEventListener('keydown', (event) => {
-    handleKeyEvent(event);
-  });
+  try {
+    // capture：比正文里可能存在的其他监听更早拿到方向键
+    doc.addEventListener('keydown', (event) => handleKeyEvent(event), true);
+    doc.defaultView?.addEventListener('keydown', (event) => handleKeyEvent(event), true);
+  } catch (error) {
+    console.warn('bind keys to iframe failed', error);
+  }
 }
 
 export function currentCfi() {
