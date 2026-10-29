@@ -53,6 +53,7 @@ class App:
     store: SettingsStore
     threads: dict[str, threading.Thread] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    watching_embedding: bool = False
 
     # -------------------------------------------------------- 后台任务
 
@@ -86,7 +87,10 @@ class App:
         self.store.apply(self.settings)
         ner_mod.reset_default()
         self.gateway = gateway_mod.from_settings(self.settings)
-        self.embedder = embedding_mod.from_settings(self.settings)
+        embedder, reason = _embedder_or_fallback(self.settings)
+        self.embedder = embedder
+        if reason:
+            self._start_embedding_download()
         self.pipeline = Pipeline(
             db=self.db, gateway=self.gateway, embedder=self.embedder, settings=self.settings
         )
@@ -104,6 +108,22 @@ class App:
             },
         }
 
+    def _start_embedding_download(self) -> None:
+        """模型缺失时后台补齐（幂等：正在下载/已安装都会直接返回）。"""
+        if self.settings.embedding_backend not in ("auto", "bge"):
+            return
+        try:
+            started = not embedding_models.ensure(
+                self.settings.resolved_embed_dir,
+                variant=self.settings.embedding_variant,
+                endpoint=self.settings.embedding_endpoint or None,
+                proxy=self.settings.network_proxy or None,
+            )
+        except Exception:  # noqa: BLE001 - 下载失败不影响启动
+            return
+        if started:
+            self.watch_embedding_model()
+
     def watch_embedding_model(self) -> None:
         """首次启动会后台下载向量模型；下完自动切换到 BGE 并重建向量索引。
 
@@ -111,30 +131,39 @@ class App:
         语义检索也一直是空的（model_id 不同，向量空间不通用）。
         """
 
+        with self.lock:
+            if self.watching_embedding:
+                return
+            self.watching_embedding = True
+
         def worker() -> None:
             logger = logging.getLogger("novel_rag.embedding")
             dest = self.settings.resolved_embed_dir
-            for _ in range(900):  # 最多等 30 分钟
-                status = embedding_models.model_status(dest)
-                if status["installed"]:
-                    break
-                time.sleep(2)
-            else:
-                logger.warning("embedding model 仍未就绪: %s", dest)
-                return
-
-            if not isinstance(self.embedder, embedding_mod.HashEmbedding):
-                return
             try:
-                self.refresh()
-                logger.info("embedding 已切换到 %s，开始重建向量索引", self.embedder.model_id)
-                for row in self.db.query("SELECT id, title FROM books"):
-                    count = index_store.index_vectors(
-                        self.db, row["id"], self.embedder, batch=self.settings.embedding_batch
-                    )
-                    logger.info("reindex %s (%s): %d 段", row["title"], row["id"], count)
-            except Exception:  # noqa: BLE001
-                logger.exception("embedding 切换/重建索引失败")
+                for _ in range(900):  # 最多等 30 分钟
+                    status = embedding_models.model_status(dest)
+                    if status["installed"]:
+                        break
+                    time.sleep(2)
+                else:
+                    logger.warning("embedding model 仍未就绪: %s", dest)
+                    return
+
+                if not isinstance(self.embedder, embedding_mod.HashEmbedding):
+                    return
+                try:
+                    self.refresh()
+                    logger.info("embedding 已切换到 %s，开始重建向量索引", self.embedder.model_id)
+                    for row in self.db.query("SELECT id, title FROM books"):
+                        count = index_store.index_vectors(
+                            self.db, row["id"], self.embedder, batch=self.settings.embedding_batch
+                        )
+                        logger.info("reindex %s (%s): %d 段", row["title"], row["id"], count)
+                except Exception:  # noqa: BLE001
+                    logger.exception("embedding 切换/重建索引失败")
+            finally:
+                # 允许之后的 refresh（如用户重装/重连网络）再次启动监听
+                self.watching_embedding = False
 
         threading.Thread(target=worker, name="embedding-watch", daemon=True).start()
 
@@ -225,6 +254,19 @@ class App:
         return ids
 
 
+def _embedder_or_fallback(settings: Settings) -> tuple[embedding_mod.EmbeddingProvider, str]:
+    """模型或运行时缺失时降级为占位向量，保证应用能起来（随后后台自动补齐模型）。
+
+    显式选 bge 但模型文件缺失时，直接启动失败会让界面都打不开（用户无处修复），
+    因此这里统一降级并记录告警，下载完成后再由 watch_embedding_model 切回 BGE。
+    """
+    try:
+        return embedding_mod.from_settings(settings), ""
+    except (FileNotFoundError, ImportError) as exc:
+        logging.getLogger("novel_rag").warning("embedding 降级为占位向量：%s", exc)
+        return embedding_mod.HashEmbedding(), str(exc)
+
+
 def build_app(settings: Settings | None = None, db_path: str | None = None) -> App:
     settings = settings or get_settings()
     settings.ensure_home()
@@ -232,22 +274,9 @@ def build_app(settings: Settings | None = None, db_path: str | None = None) -> A
     store = SettingsStore(db)
     store.apply(settings)
     gw = gateway_mod.from_settings(settings)
-    emb = embedding_mod.from_settings(settings)
+    emb, reason = _embedder_or_fallback(settings)
     pipeline = Pipeline(db=db, gateway=gw, embedder=emb, settings=settings)
     qa = QaService(db=db, gateway=gw, embedder=emb, settings=settings)
-
-    # 决策：模型缺失时自动下载（后台线程，不阻塞启动）；下完再切 BGE 并重建索引
-    download_started = False
-    if settings.embedding_backend in ("auto", "bge") and isinstance(emb, embedding_mod.HashEmbedding):
-        try:
-            download_started = not embedding_models.ensure(
-                settings.resolved_embed_dir,
-                variant=settings.embedding_variant,
-                endpoint=settings.embedding_endpoint or None,
-                proxy=settings.network_proxy or None,
-            )
-        except Exception:  # noqa: BLE001 - 下载失败不影响启动
-            download_started = False
 
     app = App(
         settings=settings,
@@ -258,8 +287,9 @@ def build_app(settings: Settings | None = None, db_path: str | None = None) -> A
         qa=qa,
         store=store,
     )
-    if download_started:
-        app.watch_embedding_model()
+    # 决策：模型缺失时自动下载（后台线程，不阻塞启动）；下完再切 BGE 并重建索引
+    if reason:
+        app._start_embedding_download()
     return app
 
 

@@ -282,6 +282,52 @@ class EmbeddingEndpointTest(unittest.TestCase):
         )
 
 
+class EmbeddingFallbackTest(unittest.TestCase):
+    """模型缺失不应该让进程起不来（打包后用户没有终端可救）。"""
+
+    def test_explicit_bge_without_model_degrades(self) -> None:
+        from novel_rag.api.server import _embedder_or_fallback
+        from novel_rag.llm import embedding as emb
+
+        settings = Settings(embedding_dir="/nonexistent/path", embedding_backend="bge")
+        provider, reason = _embedder_or_fallback(settings)
+        self.assertIsInstance(provider, emb.HashEmbedding)
+        self.assertIn("未找到模型", reason)
+
+    def test_build_app_survives_missing_bge_model(self) -> None:
+        from unittest import mock
+
+        from novel_rag import embedding_models
+        from novel_rag.llm import embedding as emb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(
+                home=Path(tmp), embedding_backend="bge", embedding_dir="/nonexistent/path"
+            )
+            with mock.patch.object(embedding_models, "ensure", return_value=True):
+                app = build_app(settings=settings, db_path=str(Path(tmp) / "x.db"))
+            self.assertIsInstance(app.embedder, emb.HashEmbedding)
+            app.db.close()
+
+    def test_refresh_with_missing_bge_model_keeps_running(self) -> None:
+        from unittest import mock
+
+        from novel_rag import embedding_models
+        from novel_rag.llm import embedding as emb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(home=Path(tmp), embedding_backend="hash")
+            app = build_app(settings=settings, db_path=str(Path(tmp) / "y.db"))
+            app.store.update(
+                {"embedding_backend": "bge", "embedding_dir": "/nonexistent/path"}
+            )
+            with mock.patch.object(embedding_models, "ensure", return_value=True):
+                info = app.refresh()
+            self.assertIsInstance(app.embedder, emb.HashEmbedding)
+            self.assertEqual(info["embedding"], "HashEmbedding")
+            app.db.close()
+
+
 class SplitBackendTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
