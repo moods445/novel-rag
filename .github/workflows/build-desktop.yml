@@ -3,7 +3,6 @@ name: build-desktop
 # 一律在 GitHub Actions 上打包，本地不产出可分发产物。
 on:
   push:
-    branches: [master, main]
     tags: ["v*"]
     paths-ignore: ["**.md", "docs/**", ".gitignore"]
   workflow_dispatch:
