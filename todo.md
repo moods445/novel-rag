@@ -23,6 +23,21 @@
 - [x] 验证：网页端 playwright 实测（`novels/三国演义.txt` 121 章）—— 导入进度四段、←→/↑↓/PgUp/PgDn/空格、iframe 内按键、连按 5 次不丢、刷新两次回到原位、重开同一本书
 - [x] 文档：README 增「阅读页（键盘 / 刷新 / 导入进度）」，并说明 foliate sandbox 控制台警告无害
 
+## 本轮（向量化页 / 日志页 / Docker 问答降级）
+
+- [x] 后端：`GET /api/books/{id}/vectors` 按章节统计向量覆盖（已向量化段数、完成章数、下一章）；`POST /api/books/{id}/vectors/rebuild` 后台逐章重建（任务状态含当前章节）
+- [x] 后端：`store/index.py` 新增 `vector_status` / `clear_vectors`（只统计当前 embedding 模型）
+- [x] 后端：`GET /api/logs?source=backend|sidecar&lines=N` 读取日志尾部（限制 1–2000 行）
+- [x] 后端：关键操作写日志（导入、重建、分析 start/pause/resume/retry、问答、设置、provider 增删）
+- [x] 修复问答降级：区分「未配置模型」与「调用失败」，把真实错误写进回答前缀、`llm.error` 与日志
+- [x] 前端：新增「向量」页（总进度条、已向量化/总段数、完成章数、当前/下一章、章节明细列表、整本重建）
+- [x] 前端：新增「日志」页（backend/sidecar 切换、200–2000 行、自动刷新、级别着色）
+- [x] 前端：设置页显示问答模型是否生效；对话/分析回答下方显示模型错误原因
+- [x] Docker：compose 生成模板注入 `NOVEL_RAG_QUERY_*` / `NOVEL_RAG_EXTRACT_*` / `NOVEL_RAG_PROXY` / `NOVEL_RAG_LOG_LEVEL`
+- [x] Docker：`deploy.sh` 新增 `--query-*` / `--extract-*`（extract 缺省复用 query），.env 保留手改变量，未配置问答模型时打印告警
+- [x] 验证：后端 unittest（132 通过，不含 test_cli）；`bash -n deploy.sh`；浏览器实测向量页/日志页/设置页；curl 验证 121 章重建与问答降级文案
+- [x] 测试：`test_qa` 增「provider 报错暴露真实原因」「向量状态按章节统计」，`test_web_static` 增日志尾部接口
+
 # 待确认
 
 - [ ] 是否需要「翻页/滚动」排版模式切换开关（当前固定为连贯滚动）

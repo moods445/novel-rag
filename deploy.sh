@@ -54,12 +54,24 @@ usage() {
   -d, --data PATH    数据目录，默认 ./data（脚本旁边）；给普通的词则当命名卷
       --embed MODE   向量检索：auto（默认）/ hash（最省资源）/ bge
       --image IMG    换镜像地址，默认 ghcr.io/moods445/novel-rag:latest
+      --query-base-url URL   问答模型地址（OpenAI 兼容，如 https://api.openai.com/v1）
+      --query-api-key KEY    问答模型 API Key
+      --query-model NAME     问答模型名（如 gpt-4o-mini）
+      --extract-base-url URL 抽取模型地址（不填则复用 --query-* 的值）
+      --extract-api-key KEY  抽取模型 API Key
+      --extract-model NAME   抽取模型名
   -h, --help         显示这段帮助
+
+说明:
+  不配置 --query-* 时容器里没有可用的问答模型，问答只会返回原文摘录
+  （页面会提示「问答模型未配置」）。这些值也会写进 .env，下次直接沿用。
 
 例子:
   ./deploy.sh                       # 内网直接跑起来，数据落在 ./data
   ./deploy.sh --auth --port 9000    # 开鉴权 + 换端口
   ./deploy.sh --data /srv/nr        # 数据换个地方
+  ./deploy.sh --query-base-url https://api.openai.com/v1 \
+              --query-api-key sk-xxx --query-model gpt-4o-mini
 
 生成物（都在脚本同目录）:
   docker-compose.yml   每次执行按参数重写，改它没用
@@ -76,6 +88,12 @@ arg_auth=""          # 1 = 开启鉴权 / 0 = 免鉴权 / 空 = 沿用 .env
 arg_data=""
 arg_embed=""
 arg_image=""
+arg_query_base_url=""
+arg_query_api_key=""
+arg_query_model=""
+arg_extract_base_url=""
+arg_extract_api_key=""
+arg_extract_model=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,6 +105,12 @@ while [ $# -gt 0 ]; do
     -d|--data)  arg_data="${2:-}"; shift 2 ;;
     --embed)    arg_embed="${2:-}"; shift 2 ;;
     --image)    arg_image="${2:-}"; shift 2 ;;
+    --query-base-url)    arg_query_base_url="${2:-}"; shift 2 ;;
+    --query-api-key)     arg_query_api_key="${2:-}"; shift 2 ;;
+    --query-model)       arg_query_model="${2:-}"; shift 2 ;;
+    --extract-base-url)  arg_extract_base_url="${2:-}"; shift 2 ;;
+    --extract-api-key)   arg_extract_api_key="${2:-}"; shift 2 ;;
+    --extract-model)     arg_extract_model="${2:-}"; shift 2 ;;
     -h|--help)  usage; exit 0 ;;
     *) die "不认识的参数：$1（--help 看用法）" ;;
   esac
@@ -123,6 +147,10 @@ write_compose() {
 #   NOVEL_RAG_DISABLE_AUTH=1      1 = 不校验 token（内网/反代后面才用）
 #   NOVEL_RAG_DATA=./data         数据目录，默认在脚本旁边；填普通名字则用命名卷
 #   NOVEL_RAG_EMBED_BACKEND=auto  auto | hash
+#
+# 问答/抽取模型（不配置则问答只能做原文摘录）：
+#   NOVEL_RAG_QUERY_BASE_URL / _API_KEY / _MODEL     问答模型（OpenAI 兼容）
+#   NOVEL_RAG_EXTRACT_BASE_URL / _API_KEY / _MODEL   抽取模型
 services:
   novel-rag:
     image: ${NOVEL_RAG_IMAGE:-ghcr.io/moods445/novel-rag:latest}
@@ -134,6 +162,17 @@ services:
       NOVEL_RAG_DISABLE_AUTH: "${NOVEL_RAG_DISABLE_AUTH:-1}"
       NOVEL_RAG_TOKEN: "${NOVEL_RAG_TOKEN:-}"
       NOVEL_RAG_EMBED_BACKEND: "${NOVEL_RAG_EMBED_BACKEND:-auto}"
+      # 模型调用（容器里没有桌面端的 opencode 配置，只能靠环境变量注入）
+      NOVEL_RAG_QUERY_BASE_URL: "${NOVEL_RAG_QUERY_BASE_URL:-}"
+      NOVEL_RAG_QUERY_API_KEY: "${NOVEL_RAG_QUERY_API_KEY:-}"
+      NOVEL_RAG_QUERY_MODEL: "${NOVEL_RAG_QUERY_MODEL:-}"
+      NOVEL_RAG_EXTRACT_BASE_URL: "${NOVEL_RAG_EXTRACT_BASE_URL:-}"
+      NOVEL_RAG_EXTRACT_API_KEY: "${NOVEL_RAG_EXTRACT_API_KEY:-}"
+      NOVEL_RAG_EXTRACT_MODEL: "${NOVEL_RAG_EXTRACT_MODEL:-}"
+      NOVEL_RAG_LLM_TIMEOUT: "${NOVEL_RAG_LLM_TIMEOUT:-240}"
+      NOVEL_RAG_LLM_TIMEOUT_QUERY: "${NOVEL_RAG_LLM_TIMEOUT_QUERY:-120}"
+      NOVEL_RAG_PROXY: "${NOVEL_RAG_PROXY:-}"
+      NOVEL_RAG_LOG_LEVEL: "${NOVEL_RAG_LOG_LEVEL:-INFO}"
       TZ: "${TZ:-Asia/Shanghai}"
     volumes:
       # 数据库、日志、embedding 模型都在 /data，删容器不丢数据
@@ -183,6 +222,16 @@ TOKEN="${arg_token:-$(env_get NOVEL_RAG_TOKEN)}"
 DATA="${arg_data:-$(env_get NOVEL_RAG_DATA)}";             DATA="${DATA:-$DEFAULT_DATA}"
 EMBED="${arg_embed:-$(env_get NOVEL_RAG_EMBED_BACKEND)}";  EMBED="${EMBED:-auto}"
 IMAGE="${arg_image:-$(env_get NOVEL_RAG_IMAGE)}";          IMAGE="${IMAGE:-$DEFAULT_IMAGE}"
+QUERY_BASE_URL="${arg_query_base_url:-$(env_get NOVEL_RAG_QUERY_BASE_URL)}"
+QUERY_API_KEY="${arg_query_api_key:-$(env_get NOVEL_RAG_QUERY_API_KEY)}"
+QUERY_MODEL="${arg_query_model:-$(env_get NOVEL_RAG_QUERY_MODEL)}"
+# 抽取不单独配置时复用问答模型（同一个 OpenAI 兼容端点最常见）
+EXTRACT_BASE_URL="${arg_extract_base_url:-$(env_get NOVEL_RAG_EXTRACT_BASE_URL)}"
+EXTRACT_API_KEY="${arg_extract_api_key:-$(env_get NOVEL_RAG_EXTRACT_API_KEY)}"
+EXTRACT_MODEL="${arg_extract_model:-$(env_get NOVEL_RAG_EXTRACT_MODEL)}"
+EXTRACT_BASE_URL="${EXTRACT_BASE_URL:-$QUERY_BASE_URL}"
+EXTRACT_API_KEY="${EXTRACT_API_KEY:-$QUERY_API_KEY}"
+EXTRACT_MODEL="${EXTRACT_MODEL:-$QUERY_MODEL}"
 
 case "$arg_auth" in
   1) DISABLE_AUTH=0 ;;
@@ -228,6 +277,12 @@ case "$DATA" in
 esac
 
 write_env() {
+  # 保留用户手工加进 .env 的其它变量（代理、超时、自定义 provider 等），
+  # 否则每次 ./deploy.sh 都会把它们清掉。
+  local extras=""
+  if [ -f "$ENV_FILE" ]; then
+    extras="$(grep -Ev '^(NOVEL_RAG_(IMAGE|PORT|DATA|DISABLE_AUTH|TOKEN|EMBED_BACKEND|QUERY_BASE_URL|QUERY_API_KEY|QUERY_MODEL|EXTRACT_BASE_URL|EXTRACT_API_KEY|EXTRACT_MODEL)=|#)' "$ENV_FILE" || true)"
+  fi
   umask 077
   cat > "$ENV_FILE" <<EOF
 # 由 deploy.sh 生成；改这里等价于改 deploy.sh 的参数
@@ -237,7 +292,16 @@ NOVEL_RAG_DATA=$DATA
 NOVEL_RAG_DISABLE_AUTH=$DISABLE_AUTH
 NOVEL_RAG_TOKEN=$TOKEN
 NOVEL_RAG_EMBED_BACKEND=$EMBED
+NOVEL_RAG_QUERY_BASE_URL=$QUERY_BASE_URL
+NOVEL_RAG_QUERY_API_KEY=$QUERY_API_KEY
+NOVEL_RAG_QUERY_MODEL=$QUERY_MODEL
+NOVEL_RAG_EXTRACT_BASE_URL=$EXTRACT_BASE_URL
+NOVEL_RAG_EXTRACT_API_KEY=$EXTRACT_API_KEY
+NOVEL_RAG_EXTRACT_MODEL=$EXTRACT_MODEL
 EOF
+  if [ -n "$extras" ]; then
+    printf '%s\n' "$extras" >> "$ENV_FILE"
+  fi
   umask 022
 }
 
@@ -245,6 +309,8 @@ EOF
 clear_env() {
   unset NOVEL_RAG_IMAGE NOVEL_RAG_PORT NOVEL_RAG_DATA \
         NOVEL_RAG_DISABLE_AUTH NOVEL_RAG_TOKEN NOVEL_RAG_EMBED_BACKEND \
+        NOVEL_RAG_QUERY_BASE_URL NOVEL_RAG_QUERY_API_KEY NOVEL_RAG_QUERY_MODEL \
+        NOVEL_RAG_EXTRACT_BASE_URL NOVEL_RAG_EXTRACT_API_KEY NOVEL_RAG_EXTRACT_MODEL \
         NOVEL_RAG_CONTAINER 2>/dev/null || true
 }
 
@@ -267,8 +333,13 @@ print_url() {
     info "（当前免鉴权，只适合内网或反代后面；要口令就 ./deploy.sh --auth）"
   fi
   info ""
+  if [ -z "$QUERY_MODEL" ] || [ -z "$QUERY_BASE_URL" ]; then
+    warn "问答模型未配置：问答只会返回原文摘录。建议重新执行并带上 --query-base-url / --query-model / --query-api-key"
+  else
+    info "问答模型：$QUERY_MODEL @ $QUERY_BASE_URL"
+  fi
   info "数据：$DATA"
-  info "日志：./deploy.sh logs"
+  info "日志：./deploy.sh logs（容器内文件：$DATA/logs/backend.log）"
   info "停止：./deploy.sh down"
 }
 

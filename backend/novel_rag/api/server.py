@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,8 @@ class App:
     threads: dict[str, threading.Thread] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
     watching_embedding: bool = False
+    # 向量重建任务：book_id -> {state, chapter_idx, chapter_no, indexed, ...}
+    vector_jobs: dict[str, dict] = field(default_factory=dict)
 
     # -------------------------------------------------------- 后台任务
 
@@ -168,6 +171,135 @@ class App:
 
         threading.Thread(target=worker, name="embedding-watch", daemon=True).start()
 
+    # -------------------------------------------------------- 向量化任务
+
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def effective_summary(self) -> dict:
+        """当前真正生效的组件（设置页展示 & 排查问答降级用）。"""
+        from ..llm.gateway import EchoProvider
+
+        return {
+            "ner_backend": self.settings.ner_backend,
+            "split_backend": self.settings.split_backend,
+            "embedding": type(self.embedder).__name__,
+            "embedding_model_id": self.embedder.model_id,
+            "llm": {
+                "extract": self.gateway.extract.name,
+                "query": self.gateway.query.name,
+            },
+            "llm_ready": {
+                "extract": not isinstance(self.gateway.extract, EchoProvider),
+                "query": not isinstance(self.gateway.query, EchoProvider),
+            },
+        }
+
+    def vector_status(self, book_id: str) -> dict:
+        payload = index_store.vector_status(self.db, book_id, self.embedder.model_id)
+        with self.lock:
+            job = dict(self.vector_jobs.get(book_id) or {})
+        payload.update(
+            {
+                "book_id": book_id,
+                "backend": type(self.embedder).__name__,
+                "job": job or {"state": "idle"},
+            }
+        )
+        return payload
+
+    def start_vector_rebuild(self, book_id: str) -> dict:
+        """后台重建整本书的向量（逐章推进，进度可在页面看到）。"""
+        with self.lock:
+            job = self.vector_jobs.get(book_id) or {}
+            if job.get("state") in ("queued", "running"):
+                raise InvalidInput("向量重建正在进行中")
+            self.vector_jobs[book_id] = {
+                "state": "queued",
+                "chapter_idx": None,
+                "chapter_no": None,
+                "indexed": 0,
+                "message": "",
+                "started_at": self._now(),
+                "updated_at": self._now(),
+            }
+            thread = threading.Thread(
+                target=self._vector_rebuild_worker,
+                args=(book_id,),
+                name=f"vector-rebuild-{book_id}",
+                daemon=True,
+            )
+            thread.start()
+        logging.getLogger("novel_rag.vectors").info("rebuild queued: %s", book_id)
+        return self.vector_status(book_id)
+
+    def _update_vector_job(self, book_id: str, **changes: Any) -> None:
+        with self.lock:
+            job = dict(self.vector_jobs.get(book_id) or {})
+            job.update(changes)
+            job["updated_at"] = self._now()
+            self.vector_jobs[book_id] = job
+
+    def _vector_rebuild_worker(self, book_id: str) -> None:
+        logger = logging.getLogger("novel_rag.vectors")
+        embedder = self.embedder
+        try:
+            chapters = self.db.query(
+                "SELECT idx, title FROM chapters WHERE book_id=? ORDER BY idx", (book_id,)
+            )
+            total = len(chapters)
+            cleared = index_store.clear_vectors(self.db, book_id)
+            self._update_vector_job(
+                book_id,
+                state="running",
+                chapters_total=total,
+                indexed=0,
+                message="正在重建向量…",
+            )
+            logger.info(
+                "rebuild start: book=%s chapters=%d cleared=%d model=%s",
+                book_id,
+                total,
+                cleared,
+                embedder.model_id,
+            )
+            indexed = 0
+            for pos, chapter in enumerate(chapters):
+                self._update_vector_job(
+                    book_id,
+                    chapter_idx=int(chapter["idx"]),
+                    chapter_no=pos + 1,
+                )
+                count = index_store.index_vectors(
+                    self.db,
+                    book_id,
+                    embedder,
+                    chapter_idx=int(chapter["idx"]),
+                    batch=self.settings.embedding_batch,
+                )
+                indexed += count
+                self._update_vector_job(book_id, indexed=indexed)
+                if (pos + 1) % 10 == 0 or pos + 1 == total:
+                    logger.info(
+                        "rebuild progress: book=%s %d/%d chapters, %d vectors",
+                        book_id,
+                        pos + 1,
+                        total,
+                        indexed,
+                    )
+            self._update_vector_job(
+                book_id,
+                state="done",
+                chapter_idx=None,
+                chapter_no=None,
+                indexed=indexed,
+                message=f"重建完成：{total} 章 / {indexed} 段",
+            )
+            logger.info("rebuild done: book=%s chapters=%d vectors=%d", book_id, total, indexed)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("rebuild failed: book=%s", book_id)
+            self._update_vector_job(book_id, state="failed", message=f"重建失败：{exc}")
+
     # -------------------------------------------------------- provider 管理
 
     def providers_payload(self) -> dict:
@@ -216,6 +348,9 @@ class App:
             custom=True,
         )
         self._store_custom(current)
+        logging.getLogger("novel_rag.api").info(
+            "provider saved: %s (%s)", name, base_url
+        )
         return self.providers_payload()
 
     def delete_provider(self, name: str) -> dict:
@@ -223,6 +358,7 @@ class App:
         if name not in current:
             raise NotFound("provider not found")
         del current[name]
+        logging.getLogger("novel_rag.api").info("provider deleted: %s", name)
         changes: dict[str, str] = {
             "custom_providers": json.dumps(
                 [spec.to_storage() for spec in current.values()], ensure_ascii=False
@@ -462,20 +598,52 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["health"]:
             return {"status": "ok", "version": self.server_version}
 
+        # ------------------------------------------------------ 日志
+        if tail == ["logs"] and method == "GET":
+            source = (_first(query, "source") or "backend").lower()
+            if source not in ("backend", "sidecar"):
+                raise InvalidInput("source 只能是 backend | sidecar")
+            limit = _opt_int(_first(query, "lines")) or 200
+            limit = min(max(limit, 1), 2000)
+            path = (
+                self.app.settings.log_file
+                if source == "backend"
+                else self.app.settings.resolved_log_dir / "sidecar.log"
+            )
+            lines, size = _tail_file(path, limit)
+            return {
+                "source": source,
+                "path": str(path),
+                "exists": path.exists(),
+                "size": size,
+                "lines": lines,
+            }
+
         # ------------------------------------------------------ 设置与模型
         if tail == ["settings"]:
             if method == "GET":
-                return self.app.store.describe(self.app.settings)
-            if method == "PUT":
-                self.app.store.update(self._read_json())
-                effective = self.app.refresh()
                 payload = self.app.store.describe(self.app.settings)
-                payload["effective"] = effective
+                payload["effective"] = self.app.effective_summary()
+                return payload
+            if method == "PUT":
+                changes = self._read_json()
+                self.app.store.update(changes)
+                self.app.refresh()
+                logging.getLogger("novel_rag.settings").info(
+                    "settings updated: %s", ", ".join(sorted(changes))
+                )
+                payload = self.app.store.describe(self.app.settings)
+                payload["effective"] = self.app.effective_summary()
                 return payload
             if method == "DELETE":
-                self.app.store.update({key: "" for key in self.app.store.get_all()})
+                cleared = list(self.app.store.get_all())
+                self.app.store.update({key: "" for key in cleared})
+                logging.getLogger("novel_rag.settings").info(
+                    "settings reset: %s", ", ".join(sorted(cleared))
+                )
                 payload = self.app.store.describe(self.app.settings)
-                payload["effective"] = self.app.refresh()
+                self.app.refresh()
+                payload["effective"] = self.app.effective_summary()
                 return payload
 
         if tail == ["models"]:
@@ -527,17 +695,21 @@ class Handler(BaseHTTPRequestHandler):
         if len(tail) >= 2 and tail[0] == "analysis":
             book_id = tail[1]
             action = tail[2] if len(tail) > 2 else ""
+            api_log = logging.getLogger("novel_rag.api")
             if method == "GET":
                 return self.app.pipeline.status(book_id)
             if method == "POST":
                 if action == "start":
                     state = self.app.pipeline.start(book_id)
                     body = self._read_json() if self.headers.get("Content-Length") else {}
+                    api_log.info("analysis start: book=%s", book_id)
                     self.app.start_analysis(book_id, max_chapters=_opt_int(body.get("max_chapters")))
                     return state
                 if action == "pause":
+                    api_log.info("analysis pause: book=%s", book_id)
                     return self.app.pipeline.pause(book_id)
                 if action == "resume":
+                    api_log.info("analysis resume: book=%s", book_id)
                     state = self.app.pipeline.resume(book_id)
                     self.app.start_analysis(book_id)
                     return state
@@ -546,6 +718,7 @@ class Handler(BaseHTTPRequestHandler):
                     chapter_idx = _opt_int(body.get("chapter_idx"))
                     if chapter_idx is None:
                         raise InvalidInput("需要 chapter_idx（从 0 开始）")
+                    api_log.info("analysis retry: book=%s chapter=%s", book_id, chapter_idx)
                     state = self.app.pipeline.retry_from(book_id, chapter_idx)
                     self.app.start_analysis(book_id, max_chapters=_opt_int(body.get("max_chapters")))
                     return state
@@ -553,9 +726,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if tail == ["ask"] and method == "POST":
             body = self._read_json()
+            question = str(body.get("question") or "")
+            logging.getLogger("novel_rag.api").info(
+                "ask: book=%s chars=%d history=%d",
+                body.get("book_id") or "",
+                len(question),
+                len(body.get("history") or []),
+            )
             return self.app.qa.ask(
                 str(body.get("book_id") or ""),
-                str(body.get("question") or ""),
+                question,
                 progress_seq=_opt_int(body.get("progress_seq")),
                 spoiler_guard=_opt_bool(body.get("spoiler_guard")),
                 history=body.get("history"),
@@ -583,6 +763,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest == ["resplit"] and method == "POST":
             body = self._read_json()
+            logging.getLogger("novel_rag.api").info("resplit: book=%s", book_id)
             result = resplit_book(
                 db,
                 book_id,
@@ -643,6 +824,12 @@ class Handler(BaseHTTPRequestHandler):
             ]
             payload = build_epub(book.title, book.author, chapters)
             return ("__epub__", book_id, payload)
+
+        if rest == ["vectors"] and method == "GET":
+            return self.app.vector_status(book_id)
+
+        if rest == ["vectors", "rebuild"] and method == "POST":
+            return self.app.start_vector_rebuild(book_id)
 
         if rest == ["coverage"]:
             return {
@@ -783,6 +970,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             raise InvalidInput("需要 text 或 path")
 
+        logging.getLogger("novel_rag.import").info(
+            "import: book=%s title=%s chapters=%d paragraphs=%d reused=%s",
+            result.book.id,
+            result.book.title,
+            result.chapter_count,
+            result.paragraph_count,
+            result.reused,
+        )
+
         # 决策 #6：导入即后台全量预抽取，且立即解锁（不阻塞接口返回）。
         # analyze=false 用于「先导入、稍后手动控制分析量」的场景（如 LLM 成本试跑）。
         if body.get("analyze", True):
@@ -835,6 +1031,18 @@ def _content_type(path: Path) -> str:
         return known
     guessed, _encoding = mimetypes.guess_type(path.name)
     return guessed or "application/octet-stream"
+
+
+def _tail_file(path: Path, limit: int) -> tuple[list[str], int]:
+    """读取日志尾部 ``limit`` 行。日志由 RotatingFileHandler 控制在 5MB 内。"""
+    if not path.exists():
+        return [], 0
+    try:
+        size = path.stat().st_size
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], 0
+    return text.splitlines()[-limit:], size
 
 
 def _first(query: dict[str, list[str]], key: str) -> str | None:

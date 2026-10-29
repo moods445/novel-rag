@@ -83,6 +83,36 @@ class QaTest(unittest.TestCase):
         result = self.app.qa.ask(self.book_id, "林凡是谁", progress_seq=99, spoiler_guard=False)
         self.assertEqual(result["degraded"], "extractive")
         self.assertIn("原文摘录", result["answer"])
+        self.assertIn("未配置", result["answer"])
+
+    def test_provider_error_is_surfaced(self) -> None:
+        """调用失败必须把真实原因带出来，否则用户只看到「未能调用本地模型」无从排查。"""
+
+        class BrokenProvider:
+            name = "broken"
+
+            def complete(self, prompt, *, system=None, max_tokens=1024):
+                raise RuntimeError("connect timeout: 10.0.0.5:8080")
+
+        self.app.gateway.query = BrokenProvider()
+        result = self.app.qa.ask(self.book_id, "林凡是谁", progress_seq=99, spoiler_guard=False)
+        self.assertEqual(result["degraded"], "extractive")
+        self.assertIn("调用失败", result["answer"])
+        self.assertIn("connect timeout", result["answer"])
+        self.assertEqual(result["llm"]["provider"], "broken")
+        self.assertTrue(result["llm"]["configured"])
+        self.assertIn("connect timeout", result["llm"]["error"])
+
+    def test_vector_status_reports_per_chapter_progress(self) -> None:
+        status = self.app.vector_status(self.book_id)
+        self.assertEqual(status["chapters_total"], 3)
+        self.assertEqual(status["chapters_done"], 3)
+        self.assertGreater(status["indexed"], 0)
+        self.assertIsNone(status["next_chapter_no"])
+        self.assertEqual(len(status["chapters"]), 3)
+        self.assertEqual(status["chapters"][0]["chapter_no"], 1)
+        self.assertTrue(status["chapters"][0]["done"])
+        self.assertEqual(status["job"]["state"], "idle")
 
     def test_coverage_is_reported(self) -> None:
         self.app.gateway.query = FixedProvider("回答 [1]。")

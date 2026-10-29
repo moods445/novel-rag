@@ -115,6 +115,9 @@ function renderMeta(result) {
     `（结构化 ${routes.structured || 0} / 全文 ${routes.lexical || 0} / 语义 ${routes.semantic || 0}）` +
     ` · 已校验 ${gates.extracted || 0} / 未校验 ${gates.unparsed || 0}` +
     ` · 知识库覆盖 ${coverage.done || 0}/${coverage.total || 0}`;
+  const llmError = result.llm && result.llm.error;
+  els.coverageHint.textContent += llmError ? ` · 模型错误：${llmError}` : '';
+  els.coverageHint.style.color = llmError ? 'var(--danger)' : '';
 }
 
 async function withTask(action) {

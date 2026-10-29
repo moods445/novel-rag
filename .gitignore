@@ -38,3 +38,7 @@ node_modules/
 dist/
 *.dmg
 *.app/
+
+
+*.zip
+.trae-html-share-packages/

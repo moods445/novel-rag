@@ -137,7 +137,10 @@ function renderAnswer(wrap, result) {
   const parts = [`引用 ${citations.length} 条`];
   if (coverage.total) parts.push(`知识库 ${coverage.done || 0}/${coverage.total}`);
   if (result.degraded) parts.push(result.degraded === 'extractive' ? '离线摘录' : result.degraded);
+  const llmError = result.llm && result.llm.error;
+  if (llmError) parts.push(`模型错误：${llmError}`);
   meta.textContent = parts.join(' · ');
+  if (llmError) meta.style.color = 'var(--danger)';
   wrap.appendChild(meta);
   scrollToBottom();
 }

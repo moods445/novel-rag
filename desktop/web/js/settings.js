@@ -73,6 +73,20 @@ function fill(data) {
       : `未安装（缺 ${(embedding.missing || []).join(', ')}）`;
   }
 
+  if (els.llmEffective) {
+    const effective = data.effective || {};
+    const llm = effective.llm || {};
+    const ready = effective.llm_ready || {};
+    if (ready.query) {
+      els.llmEffective.textContent = `问答模型已生效：${llm.query || ''}`;
+      els.llmEffective.style.color = '';
+    } else {
+      els.llmEffective.textContent =
+        '问答模型未生效（当前走离线摘录）：请选择 provider 与模型，或配置 NOVEL_RAG_QUERY_* 环境变量';
+      els.llmEffective.style.color = 'var(--danger)';
+    }
+  }
+
   if (els.effective) {
     els.effective.textContent = JSON.stringify(
       {

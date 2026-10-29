@@ -8,14 +8,17 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from ..config import Settings, get_settings
 from ..db.conn import Database
 from ..llm.embedding import EmbeddingProvider
-from ..llm.gateway import ECHO_SENTINEL, LlmGateway
+from ..llm.gateway import ECHO_SENTINEL, EchoProvider, LlmGateway
 from ..retrieve.compiler import citation_payload
 from ..retrieve.retriever import Retriever
+
+logger = logging.getLogger("novel_rag.qa")
 
 SYSTEM = (
     "你是小说知识库的问答助手。只能依据给定资料回答，不得编造。"
@@ -97,6 +100,10 @@ class QaService:
         if not compiled.blocks:
             return {**base, "answer": NO_CONTEXT_ANSWER, "degraded": "no_context"}
 
+        provider = self.gateway.query
+        provider_name = getattr(provider, "name", "unknown")
+        configured = not isinstance(provider, EchoProvider)
+
         answer = ""
         error = ""
         try:
@@ -112,18 +119,37 @@ class QaService:
             )
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
+            logger.warning(
+                "ask failed: book=%s provider=%s error=%s", book_id, provider_name, error
+            )
 
         if not answer or answer == ECHO_SENTINEL:
-            answer = self._extractive_answer(question, compiled)
+            if error:
+                logger.warning("ask degraded: book=%s provider=%s 无输出，走抽取式", book_id, provider_name)
+            elif not configured:
+                logger.warning(
+                    "ask degraded: book=%s 问答模型未配置（provider=%s），走抽取式",
+                    book_id,
+                    provider_name,
+                )
+            answer = self._extractive_answer(question, compiled, error=error, configured=configured)
             degraded = "extractive"
         else:
             degraded = ""
+            logger.info(
+                "ask ok: book=%s provider=%s answer_chars=%d", book_id, provider_name, len(answer)
+            )
 
         answer = self._ensure_citations(answer, compiled)
         return {
             **base,
             "answer": answer,
             "degraded": degraded or error,
+            "llm": {
+                "provider": provider_name,
+                "configured": configured,
+                "error": error,
+            },
             "context_preview": compiled.text[:400],
         }
 
@@ -139,10 +165,22 @@ class QaService:
             spoiler_guard = bool(row["spoiler_guard"]) if row else self.settings.spoiler_guard_default
         return progress_seq, spoiler_guard
 
-    def _extractive_answer(self, question: str, compiled) -> str:
-        """本地模型不可用时的抽取式兜底：只做引用拼接，绝不生成新内容。"""
+    def _extractive_answer(
+        self, question: str, compiled, *, error: str = "", configured: bool = True
+    ) -> str:
+        """本地模型不可用时的抽取式兜底：只做引用拼接，绝不生成新内容。
+
+        必须把降级原因写出来——否则用户只看到「未能调用本地模型」，
+        既不知道是没配置还是请求失败（Docker 里常见的 base_url/网络问题无从排查）。
+        """
         head = compiled.blocks[:3]
-        lines = [f"（未能调用本地模型，以下为原文摘录，未做归纳）"]
+        if not configured:
+            reason = "问答模型未配置：请在「设置」里选择 provider，或配置 NOVEL_RAG_QUERY_* 环境变量"
+        elif error:
+            reason = f"问答模型调用失败：{error}"
+        else:
+            reason = "问答模型没有返回内容"
+        lines = [f"（{reason}；以下为原文摘录，未做归纳）"]
         for b in head:
             where = f"第{b.chapter_idx + 1}章"
             lines.append(f"- {where}：{b.text[:80]} [{b.citation}]")

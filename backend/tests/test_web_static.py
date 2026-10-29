@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import http.client
+import json
 import tempfile
 import threading
 import unittest
@@ -87,6 +88,23 @@ class WebStaticTest(unittest.TestCase):
         status, _head, body = self._get("/api/health", token="web-token")
         self.assertEqual(status, 200)
         self.assertIn(b"ok", body)
+
+    def test_log_tail_endpoint(self) -> None:
+        """日志页依赖这个接口：只返回尾部 N 行，且必须带 token。"""
+        log_file = self.settings.log_file
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        entries = [f"2026-10-29 20:00:0{i} INFO     [MainThread] novel_rag.test: line{i}" for i in range(3)]
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(entries) + "\n")
+
+        status, _head, body = self._get("/api/logs?source=backend&lines=2", token="web-token")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["source"], "backend")
+        self.assertEqual(payload["lines"][-2:], entries[-2:])
+
+        status, _head, _body = self._get("/api/logs?source=bogus", token="web-token")
+        self.assertEqual(status, 400)
 
 
 class WebRootUnsetTest(unittest.TestCase):

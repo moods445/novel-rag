@@ -93,6 +93,14 @@ docker run -d --name novel-rag -p 8000:8000 \
 ./deploy.sh --data /srv/novel-rag    # 数据换个地方（默认就在脚本旁边的 ./data）
 ./deploy.sh --embed hash             # 跳过 100MB 向量模型下载
 ./deploy.sh status | logs | restart | down | purge
+
+# 配问答模型（不配的话问答只返回原文摘录）
+./deploy.sh --query-base-url https://api.openai.com/v1 \
+            --query-api-key sk-xxx --query-model gpt-4o-mini
+
+# 抽取想用另一个模型时再单独指定（不填则复用 --query-*）
+./deploy.sh --query-base-url ... --query-model ... \
+            --extract-base-url ... --extract-api-key ... --extract-model ...
 ```
 
 执行后脚本同目录会有三样东西（都已 gitignore 或可随时重生成）：
@@ -120,9 +128,19 @@ docker compose pull && docker compose up -d
 | `NOVEL_RAG_DISABLE_AUTH` | `1` = 不校验 token。**只在受信网络 / 反向代理后面用** |
 | `NOVEL_RAG_EMBED_BACKEND` | `auto`（缺模型后台下载，约 100MB）\| `hash`（占位向量，最省资源） |
 | `NOVEL_RAG_PROXY` | 下载模型 / 调 LLM 走的代理 |
+| `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 问答模型（OpenAI 兼容）。容器里没有桌面端 opencode 配置，**不配就只能返回原文摘录** |
+| `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 抽取模型；不配时建议与查询用同一个端点 |
+| `NOVEL_RAG_LLM_TIMEOUT` / `_QUERY` | 抽取 / 问答请求超时（秒），默认 240 / 120 |
+| `NOVEL_RAG_LOG_LEVEL` | 日志级别（页面「日志」读取 `/data/logs/backend.log`） |
 
 镜像内置 `HEALTHCHECK`（探 `/api/health`），`docker ps` 能看到 healthy。
 首次启动会后台下载 BGE 向量模型；想跳过就用 `NOVEL_RAG_EMBED_BACKEND=hash`。
+
+界面侧栏新增两个页面：
+
+- **向量**：按章节显示向量化进度（已向量化段数、完成章数、当前/下一章、逐章明细），
+  可对整本执行「重建向量」（后台逐章推进，进度实时刷新）。
+- **日志**：直接查看容器内 `backend.log` 尾部（200–2000 行、级别着色、自动刷新）。
 
 本地验证完记得删掉镜像和数据（不留在本机）：
 
@@ -211,6 +229,9 @@ python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 | GET | `/api/books/{id}/chapters` | 目录（含章节指纹与 spine） |
 | GET | `/api/books/{id}/epub` | 交给 foliate-js 渲染的 EPUB |
 | GET | `/api/books/{id}/coverage` | 分析覆盖度（部分可用语义） |
+| GET | `/api/books/{id}/vectors` | 向量化进度（按章节明细、当前/下一章、重建任务状态） |
+| POST | `/api/books/{id}/vectors/rebuild` | 后台整本重建向量（逐章推进） |
+| GET | `/api/logs?source=backend\|sidecar&lines=500` | 读取日志尾部（1–2000 行） |
 | GET/PUT | `/api/books/{id}/progress` | 阅读进度与防剧透开关 |
 | GET | `/api/books/{id}/graph?as_of_seq=` | 关系图谱（物化到指定 seq） |
 | GET | `/api/books/{id}/timeline` | 事件时间线 |

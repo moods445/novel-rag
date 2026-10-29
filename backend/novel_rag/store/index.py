@@ -167,3 +167,63 @@ def vector_coverage(db: Database, book_id: str, model_id: str) -> dict:
         "paragraphs": int(total["c"]) if total else 0,
         "model_id": model_id,
     }
+
+
+def clear_vectors(db: Database, book_id: str) -> int:
+    """删掉某本书的全部向量（重建/换模型时用）。"""
+    cur = db.execute("DELETE FROM vectors WHERE book_id=?", (book_id,))
+    return int(cur.rowcount or 0)
+
+
+def vector_status(db: Database, book_id: str, model_id: str) -> dict:
+    """按章节统计向量覆盖，返回明细与「进行到第几章」。
+
+    只统计当前 ``model_id``：换 embedding 模型后旧向量不可复用
+    （向量空间不通用），展示时必须反映真实可检索的覆盖。
+    """
+    rows = db.query(
+        "SELECT c.idx, c.title, "
+        "  COUNT(p.id) AS total, "
+        "  SUM(CASE WHEN v.seq IS NOT NULL THEN 1 ELSE 0 END) AS indexed "
+        "FROM chapters c "
+        "LEFT JOIN paragraphs p ON p.book_id=c.book_id AND p.chapter_idx=c.idx "
+        "LEFT JOIN vectors v ON v.book_id=p.book_id AND v.seq=p.seq AND v.model_id=? "
+        "WHERE c.book_id=? GROUP BY c.idx ORDER BY c.idx",
+        (model_id, book_id),
+    )
+    chapters: list[dict] = []
+    indexed_total = 0
+    paragraph_total = 0
+    done_chapters = 0
+    for row in rows:
+        total = int(row["total"] or 0)
+        indexed = int(row["indexed"] or 0)
+        indexed_total += indexed
+        paragraph_total += total
+        percent = round(indexed / total * 100) if total else 100
+        if total and indexed >= total:
+            done_chapters += 1
+        chapters.append(
+            {
+                "chapter_idx": int(row["idx"]),
+                "chapter_no": int(row["idx"]) + 1,
+                "title": row["title"],
+                "total": total,
+                "indexed": indexed,
+                "percent": percent,
+                "done": total == 0 or indexed >= total,
+            }
+        )
+
+    next_chapter = next((c for c in chapters if not c["done"]), None)
+    return {
+        "model_id": model_id,
+        "indexed": indexed_total,
+        "paragraphs": paragraph_total,
+        "percent": round(indexed_total / paragraph_total * 100) if paragraph_total else 0,
+        "chapters_total": len(chapters),
+        "chapters_done": done_chapters,
+        "next_chapter_no": next_chapter["chapter_no"] if next_chapter else None,
+        "next_chapter_idx": next_chapter["chapter_idx"] if next_chapter else None,
+        "chapters": chapters,
+    }

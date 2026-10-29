@@ -1,8 +1,10 @@
-// 桌面壳前端入口：等待 sidecar 就绪 → 绑定四个平面。
+// 桌面壳前端入口：等待 sidecar 就绪 → 绑定各平面。
 import { api, base64FromArrayBuffer, escapeHtml, setBackend } from './api.js';
 import * as analysis from './analysis.js';
 import * as chat from './chat.js';
+import * as logs from './logs.js';
 import * as settings from './settings.js';
+import * as vectors from './vectors.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,6 +54,7 @@ const els = {
   download: $('btn-embed-download'),
   llmProvider: $('set-llm-provider'),
   llmModel: $('set-llm-model'),
+  llmEffective: $('llm-effective'),
   llmConfigPath: $('llm-config-path'),
   proxy: $('set-proxy'),
   proxyHint: $('proxy-hint'),
@@ -67,6 +70,23 @@ const els = {
   resplitPattern: $('resplit-pattern'),
   resplitHint: $('resplit-hint'),
   resplit: $('btn-resplit'),
+  // vectors
+  vectorBook: $('vector-book'),
+  vectorRefresh: $('btn-vector-refresh'),
+  vectorRebuild: $('btn-vector-rebuild'),
+  vectorState: $('vector-state'),
+  vectorBar: $('vector-bar'),
+  vectorStats: $('vector-stats'),
+  vectorHint: $('vector-hint'),
+  vectorChapterHint: $('vector-chapter-hint'),
+  vectorChapters: $('vector-chapters'),
+  // logs
+  logSource: $('log-source'),
+  logLines: $('log-lines'),
+  logAuto: $('log-auto'),
+  logRefresh: $('btn-log-refresh'),
+  logMeta: $('log-meta'),
+  logView: $('log-view'),
 };
 
 const cards = new Map();
@@ -338,6 +358,7 @@ async function boot() {
     download: els.download,
     llmProvider: els.llmProvider,
     llmModel: els.llmModel,
+    llmEffective: els.llmEffective,
     llmConfigPath: els.llmConfigPath,
     proxy: els.proxy,
     proxyHint: els.proxyHint,
@@ -354,6 +375,25 @@ async function boot() {
     resplitHint: els.resplitHint,
     resplit: els.resplit,
     getBookId: () => (state.book ? state.book.id : null),
+  });
+  vectors.init({
+    bookSelect: els.vectorBook,
+    refreshBtn: els.vectorRefresh,
+    rebuildBtn: els.vectorRebuild,
+    state: els.vectorState,
+    bar: els.vectorBar,
+    stats: els.vectorStats,
+    hint: els.vectorHint,
+    chapterHint: els.vectorChapterHint,
+    chapters: els.vectorChapters,
+  });
+  logs.init({
+    refreshBtn: els.logRefresh,
+    source: els.logSource,
+    lines: els.logLines,
+    auto: els.logAuto,
+    meta: els.logMeta,
+    view: els.logView,
   });
 
   await Promise.all([loadBooks(), settings.load().catch(() => {})]);
@@ -427,6 +467,8 @@ function showView(name) {
     analysis.refreshTask();
     analysis.refreshGraph();
   }
+  vectors.setVisible(name === 'vectors');
+  logs.setVisible(name === 'logs');
 }
 
 // ---------------------------------------------------------------- 书架
@@ -536,11 +578,13 @@ async function loadBooks() {
   els.bookList.innerHTML = '';
   if (!state.books.length) {
     els.bookList.innerHTML = '<div class="empty">还没有书，点右上角「导入小说」。</div>';
+    vectors.setBooks(state.books, state.book?.id);
     return;
   }
   for (const book of state.books) {
     els.bookList.appendChild(bookCard(book));
   }
+  vectors.setBooks(state.books, state.book?.id);
   await refreshShelf();
 }
 
@@ -601,6 +645,7 @@ async function selectBook(book) {
     chat.setBook(book);
     chat.setProgress(state.progressSeq);
     chat.setSpoilerGuard(progress.spoiler_guard !== 0);
+    vectors.setBooks(state.books, book.id);
     await openReader(book, progress);
     fillToc();
     showView('read');

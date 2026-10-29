@@ -25,6 +25,8 @@
           <button class="nav-item active" data-view="shelf">书架</button>
           <button class="nav-item" data-view="read">阅读</button>
           <button class="nav-item" data-view="analysis">分析</button>
+          <button class="nav-item" data-view="vectors">向量</button>
+          <button class="nav-item" data-view="logs">日志</button>
           <button class="nav-item" data-view="settings">设置</button>
         </nav>
         <div class="sidebar-foot">
@@ -168,6 +170,72 @@
           </div>
         </section>
 
+        <!-- 向量 -->
+        <section class="view" id="view-vectors">
+          <header class="view-head">
+            <h1>向量化</h1>
+            <div class="actions">
+              <select id="vector-book" class="select" title="选择书"></select>
+              <button class="btn" id="btn-vector-refresh">刷新</button>
+              <button class="btn primary" id="btn-vector-rebuild">重建向量</button>
+            </div>
+          </header>
+
+          <div class="vector-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <span>进度</span>
+                <span class="hint" id="vector-state"></span>
+              </div>
+              <div class="progress"><div id="vector-bar"></div></div>
+              <div class="vector-stats" id="vector-stats"></div>
+              <p class="hint" id="vector-hint"></p>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <span>章节明细</span>
+                <span class="hint" id="vector-chapter-hint"></span>
+              </div>
+              <div class="vector-chapters" id="vector-chapters"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 日志 -->
+        <section class="view" id="view-logs">
+          <header class="view-head">
+            <h1>日志</h1>
+            <div class="actions">
+              <select id="log-source" class="select">
+                <option value="backend">backend.log</option>
+                <option value="sidecar">sidecar.log</option>
+              </select>
+              <select id="log-lines" class="select">
+                <option value="200">200 行</option>
+                <option value="500" selected>500 行</option>
+                <option value="1000">1000 行</option>
+                <option value="2000">2000 行</option>
+              </select>
+              <label class="toggle">
+                <input type="checkbox" id="log-auto" checked />
+                <span>自动刷新</span>
+              </label>
+              <button class="btn" id="btn-log-refresh">刷新</button>
+            </div>
+          </header>
+
+          <div class="panel log-panel">
+            <div class="panel-head">
+              <span>操作日志</span>
+              <span class="hint" id="log-meta"></span>
+            </div>
+            <div id="log-view" class="log-view">
+              <span class="hint">加载中…</span>
+            </div>
+          </div>
+        </section>
+
         <!-- 设置 -->
         <section class="view" id="view-settings">
           <header class="view-head">
@@ -208,6 +276,7 @@
               <p class="hint" id="llm-config-path"></p>
               <select id="set-llm-provider" class="select wide"></select>
               <select id="set-llm-model" class="select wide" style="margin-top: 8px"></select>
+              <p class="hint" id="llm-effective"></p>
               <p class="hint">
                 列表包含 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>）
                 以及下方手动添加的 provider，抽取与查询共用同一个模型。未配置时退回离线模式：
