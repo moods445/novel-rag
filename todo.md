@@ -41,3 +41,8 @@
 # 待确认
 
 - [ ] 是否需要「翻页/滚动」排版模式切换开关（当前固定为连贯滚动）
+
+## Dockerfile 层数精简
+
+- [x] `Dockerfile`：把 pip 安装 / vendor 拉取 / 静态目录组装 / 建用户这三个 RUN 合成一层（源码 COPY 提前）
+- [ ] 验证：push 后 GitHub Actions `build-image` 跑通（测试 + 镜像 + 烟测）

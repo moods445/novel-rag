@@ -23,25 +23,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ---------------------------------------------------------------- 后端
+# ---------------------------------------------------------------- 源码
 COPY backend/pyproject.toml /app/backend/pyproject.toml
 COPY backend/novel_rag /app/backend/novel_rag
-RUN python -m pip install --no-cache-dir --upgrade pip \
- && python -m pip install --no-cache-dir "/app/backend[${PIP_EXTRAS}]"
-
-# ---------------------------------------------------------------- 前端
 # foliate-js 不入库，构建期拉取（要有外网）；只留运行时需要的文件
 COPY desktop/scripts/prepare_vendor.py /app/desktop/scripts/prepare_vendor.py
 COPY desktop/web /app/desktop/web
-RUN python /app/desktop/scripts/prepare_vendor.py \
- && mkdir -p /app/web \
- && cp -a /app/desktop/web/. /app/web/ \
- && rm -rf /app/desktop /app/backend
 
-# ---------------------------------------------------------------- 运行用户
+# ---------------------------------------------------------------- 安装 + 组装（单层）
+# 后端依赖、前端 vendor 拉取与静态目录组装、运行用户创建合成一个 RUN，
+# 少一层镜像；代价是任一源码变动都会让这一层缓存失效。
 # 随机端口 + 单向 token 的原始设定只适用于桌面壳；Web 部署固定 8000 端口，
 # 数据全部落在 /data（挂卷），进程以非 root 跑。
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+RUN python -m pip install --no-cache-dir --upgrade pip \
+ && python -m pip install --no-cache-dir "/app/backend[${PIP_EXTRAS}]" \
+ && python /app/desktop/scripts/prepare_vendor.py \
+ && mkdir -p /app/web \
+ && cp -a /app/desktop/web/. /app/web/ \
+ && rm -rf /app/desktop /app/backend \
+ && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
  && mkdir -p /data \
  && chown -R app:app /data /app
 USER app
