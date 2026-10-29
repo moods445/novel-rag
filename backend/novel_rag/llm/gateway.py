@@ -18,7 +18,7 @@ from typing import Protocol
 
 from ..config import Settings
 from ..errors import ProviderError
-from ..net import build_opener
+from ..net import USER_AGENT, build_opener
 from . import opencode
 
 ECHO_SENTINEL = "__ECHO__"
@@ -79,7 +79,7 @@ class OpenAICompatProvider:
                 "max_tokens": max_tokens,
             }
         ).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")

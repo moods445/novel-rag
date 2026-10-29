@@ -281,6 +281,57 @@ class EmbeddingEndpointTest(unittest.TestCase):
             embedding_models._endpoints("https://hf-mirror.com/"), ["https://hf-mirror.com"]
         )
 
+    def test_endpoint_failure_falls_back_to_mirror(self) -> None:
+        from unittest import mock
+
+        from novel_rag import embedding_models
+
+        seen: list[str] = []
+
+        def fake_download(dest, *, variant, endpoint, opener) -> None:
+            seen.append(endpoint)
+            if endpoint == "https://huggingface.co":
+                raise RuntimeError("tokenizer.json: timed out")
+            for name in ("model.onnx", "tokenizer.json"):
+                (dest / name).write_bytes(b"x")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(embedding_models, "_download_from", side_effect=fake_download):
+                state = embedding_models.download(tmp)
+        self.assertEqual(seen, ["https://huggingface.co", "https://hf-mirror.com"])
+        self.assertEqual(state["state"], "done")
+
+    def test_missing_required_file_is_not_reported_done(self) -> None:
+        from unittest import mock
+
+        from novel_rag import embedding_models
+
+        def fake_download(dest, *, variant, endpoint, opener) -> None:
+            (dest / "model.onnx").write_bytes(b"x")  # 少了 tokenizer.json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(embedding_models, "_download_from", side_effect=fake_download):
+                with self.assertRaises(RuntimeError):
+                    embedding_models.download(tmp)
+            self.assertNotEqual(embedding_models.download_state(tmp)["state"], "done")
+
+    def test_requests_carry_non_python_user_agent(self) -> None:
+        from novel_rag import embedding_models
+        from novel_rag.net import USER_AGENT
+
+        class Recorder:
+            def open(self, request, timeout=120):
+                self.headers = request.headers
+                raise RuntimeError("stop")
+
+        recorder = Recorder()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                embedding_models._fetch(
+                    "https://example.com/x", Path(tmp) / "x.bin", Path(tmp), opener=recorder
+                )
+        self.assertEqual(recorder.headers.get("User-agent"), USER_AGENT)
+
 
 class EmbeddingFallbackTest(unittest.TestCase):
     """模型缺失不应该让进程起不来（打包后用户没有终端可救）。"""

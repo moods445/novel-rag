@@ -10,7 +10,7 @@ dependencies = []
 api = ["fastapi>=0.115", "uvicorn>=0.30"]
 # 真实本地 embedding：BGE-small-zh-v1.5（ONNX）
 # 模型文件：python3 scripts/fetch_embedding_model.py
-embed = ["onnxruntime>=1.16", "tokenizers>=0.15", "numpy>=1.26"]
+embed = ["onnxruntime>=1.16", "tokenizers>=0.15", "numpy>=1.26", "certifi>=2023.7"]
 # 人名识别（CPU 小模型，词典约 5MB）；不装则自动退回正则
 ner = ["jieba>=0.42"]
 

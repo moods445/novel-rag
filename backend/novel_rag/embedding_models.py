@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .net import build_opener
+from .net import USER_AGENT, build_opener
 
 REPO = "Xenova/bge-small-zh-v1.5"
 # 未显式配置下载源时：先直连官方，失败后自动换国内镜像（国内网络直连常常不可用）
@@ -90,14 +90,15 @@ def _endpoints(endpoint: str | None) -> list[str]:
     return list(DEFAULT_ENDPOINTS)
 
 
-def _fetch(url: str, target: Path, dest: Path, *, opener) -> int:
+def _fetch(url: str, target: Path, dest: Path, *, opener, timeout: float = 30) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0:
         _set(dest, current=target.name, downloaded=target.stat().st_size)
         return target.stat().st_size
 
     tmp = target.with_suffix(target.suffix + ".part")
-    with opener.open(url, timeout=120) as resp, tmp.open("wb") as fh:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with opener.open(request, timeout=timeout) as resp, tmp.open("wb") as fh:
         total = int(resp.headers.get("Content-Length") or 0)
         _set(dest, current=target.name, total=total, downloaded=0, percent=0)
         read = 0
@@ -117,11 +118,24 @@ def _download_from(dest: Path, *, variant: str, endpoint: str, opener) -> None:
         _fetch(f"{endpoint}/{REPO}/resolve/main/{filename}", tmp, dest, opener=opener)
         # 统一命名为 model.onnx
         tmp.replace(model_path)
+    errors: list[str] = []
     for asset in ASSETS:
         try:
             _fetch(f"{endpoint}/{REPO}/resolve/main/{asset}", dest / asset, dest, opener=opener)
-        except (urllib.error.URLError, TimeoutError):
-            continue  # 可选文件，失败不影响推理
+        except Exception as exc:  # noqa: BLE001
+            if asset in REQUIRED:
+                # 缺 tokenizer 模型根本用不了，必须算这个下载源失败，换下一个
+                raise RuntimeError(f"{asset}: {exc}") from exc
+            errors.append(f"{asset}: {exc}")  # 其余可选文件，失败不影响推理
+    missing = [
+        name
+        for name in REQUIRED
+        if not (dest / name).exists() or (dest / name).stat().st_size == 0
+    ]
+    if missing:
+        raise RuntimeError(
+            f"缺少必要文件 {missing}" + (f"；可选文件失败: {errors}" if errors else "")
+        )
 
 
 def download(
@@ -145,6 +159,8 @@ def download(
     for candidate in candidates:
         try:
             _download_from(dest, variant=variant, endpoint=candidate, opener=opener)
+            if not model_status(dest)["installed"]:
+                raise RuntimeError(f"缺少必要文件: {model_status(dest)['missing']}")
         except Exception as exc:  # noqa: BLE001 - 换下一个下载源
             errors.append(f"{candidate}: {exc}")
             _set(dest, error="\n".join(errors), current="", endpoint=candidate)

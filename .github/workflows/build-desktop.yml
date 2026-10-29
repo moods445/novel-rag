@@ -91,6 +91,7 @@ jobs:
             --name novel-rag-sidecar \
             --collect-data novel_rag \
             --collect-data jieba \
+            --collect-data certifi \
             --collect-all onnxruntime \
             --collect-all tokenizers \
             --hidden-import novel_rag.api.server \
