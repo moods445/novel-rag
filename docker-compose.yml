@@ -1,0 +1,29 @@
+# Web 部署（Docker）。
+#
+# 镜像只在 GitHub Actions 里构建、推送到 ghcr.io（见 .github/workflows/docker.yml）。
+# 这里**故意不写 build:**，本地只 pull 不 build：
+#
+#   docker compose pull && docker compose up -d
+#   浏览器打开 http://127.0.0.1:8000/
+services:
+  novel-rag:
+    image: ghcr.io/moods445/novel-rag:latest
+    container_name: novel-rag
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 内网/本机直接用：关掉 token。要对外暴露时注释掉这行，改用下面的 TOKEN。
+      NOVEL_RAG_DISABLE_AUTH: "1"
+      # NOVEL_RAG_TOKEN: "change-me"        # 之后用 http://<host>:8000/#token=change-me 打开
+      # 向量检索：auto（缺模型就后台下载，约 100MB）| hash（占位向量，最省资源）
+      NOVEL_RAG_EMBED_BACKEND: "auto"
+      # 网络代理（下载模型 / 调 LLM 用），直连就删掉
+      # NOVEL_RAG_PROXY: "http://127.0.0.1:7890"
+      TZ: Asia/Shanghai
+    volumes:
+      # 数据库、日志、embedding 模型都在 /data，删容器不丢数据
+      - novel-rag-data:/data
+
+volumes:
+  novel-rag-data:

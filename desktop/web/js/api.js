@@ -1,21 +1,27 @@
 // 本地后端 HTTP 客户端。所有请求带 Bearer token（由桌面壳注入）。
-let backend = { port: null, token: '' };
+//
+// 两种后端地址：
+//   - 桌面壳 / 浏览器调试：127.0.0.1:<随机端口>（token 必须带）
+//   - Web 部署（Docker）：同源，直接用相对路径 /api/**（后端可能没配 token）
+let backend = { port: null, token: '', sameOrigin: false };
 
 export function setBackend(info) {
-  backend = { port: info.port, token: info.token || '' };
+  const port = info && info.port ? Number(info.port) : null;
+  backend = { port, token: (info && info.token) || '', sameOrigin: !port };
 }
 
 export function isReady() {
-  return Boolean(backend.port);
+  return Boolean(backend.port) || backend.sameOrigin;
 }
 
 export function endpoint(path) {
-  return `http://127.0.0.1:${backend.port}${path}`;
+  return backend.sameOrigin ? path : `http://127.0.0.1:${backend.port}${path}`;
 }
 
 async function request(path, { method = 'GET', body } = {}) {
-  if (!backend.port) throw new Error('本地后端尚未就绪');
-  const headers = { Authorization: `Bearer ${backend.token}` };
+  if (!isReady()) throw new Error('本地后端尚未就绪');
+  const headers = {};
+  if (backend.token) headers.Authorization = `Bearer ${backend.token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const res = await fetch(endpoint(path), {
     method,

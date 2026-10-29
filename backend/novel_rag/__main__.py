@@ -46,9 +46,13 @@ def main(argv: list[str] | None = None) -> int:
     log_file = setup_logging(settings)
     logger = logging.getLogger("novel_rag")
 
-    if not settings.auth_token:
+    if not settings.auth_token and not settings.disable_auth:
         settings.auth_token = os.environ.get("NOVEL_RAG_TOKEN") or _random_token()
         os.environ["NOVEL_RAG_TOKEN"] = settings.auth_token
+    if settings.disable_auth:
+        logger.warning(
+            "NOVEL_RAG_DISABLE_AUTH=1：/api 不校验 token，请只部署在受信网络或反向代理后面"
+        )
     if args.log_dir:
         os.environ["NOVEL_RAG_LOG_DIR"] = settings.log_dir
 

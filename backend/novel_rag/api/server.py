@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import re
 import threading
 import time
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import embedding_models
 from ..config import Settings, get_settings
@@ -313,7 +314,14 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header == f"Bearer {token}"
 
-    def _send(self, status: int, payload: Any, *, content_type: str = "application/json") -> None:
+    def _send(
+        self,
+        status: int,
+        payload: Any,
+        *,
+        content_type: str = "application/json",
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         if isinstance(payload, (dict, list)):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         elif isinstance(payload, bytes):
@@ -326,8 +334,49 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
+
+    # -------------------------------------------------------- 静态前端（Web 部署）
+
+    def _serve_static(self, method: str, raw_path: str) -> None:
+        """同源托管 ``desktop/web``。
+
+        Web 部署里页面和 /api 同一个源，静态资源不校验 token（浏览器也带不上
+        自定义头）；API 分支仍在 ``_dispatch`` 里做 Bearer 校验。
+        """
+        root = self.app.settings.web_root_path
+        if root is None:
+            self._send(404, {"error": "not found"})
+            return
+        if method not in ("GET", "HEAD"):
+            self._send(405, {"error": "method not allowed"})
+            return
+
+        rel = unquote(raw_path).lstrip("/") or "index.html"
+        try:
+            target = (root / rel).resolve()
+            target.relative_to(root)  # 目录穿越（../）直接 404
+        except (ValueError, OSError):
+            self._send(404, {"error": "not found"})
+            return
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            self._send(404, {"error": "not found"})
+            return
+
+        content_type = _content_type(target)
+        # index.html 必须走协商缓存，否则前端更新后用户一直看到旧壳
+        cache = "no-cache" if target.name == "index.html" else "public, max-age=3600"
+        self._send(
+            200,
+            target.read_bytes(),
+            content_type=content_type,
+            extra_headers={"Cache-Control": cache},
+        )
 
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -360,11 +409,15 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        # 非 /api 路径 = 静态前端（Docker Web 部署同源托管）
+        if not parts or parts[0] != "api":
+            self._serve_static(method, parsed.path)
+            return
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})
             return
-        parsed = urlparse(self.path)
-        parts = [p for p in parsed.path.split("/") if p]
         query = parse_qs(parsed.query)
         try:
             result = self._route(method, parts, query)
@@ -505,6 +558,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("question") or ""),
                 progress_seq=_opt_int(body.get("progress_seq")),
                 spoiler_guard=_opt_bool(body.get("spoiler_guard")),
+                history=body.get("history"),
             )
 
         raise NotFound()
@@ -602,14 +656,27 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["progress"]:
             if method == "PUT":
                 body = self._read_json()
-                seq = int(body.get("progress_seq") or 0)
-                guard = 1 if bool(body.get("spoiler_guard", True)) else 0
+                current = db.query_one(
+                    "SELECT * FROM reading_progress WHERE book_id=?", (book_id,)
+                )
+                default_guard = 1 if self.app.settings.spoiler_guard_default else 0
+                seq = _opt_int(body.get("progress_seq"))
+                if seq is None:
+                    seq = int(current["progress_seq"]) if current else 0
+                cfi = body.get("progress_cfi")
+                if cfi is None:
+                    cfi = str(current["progress_cfi"]) if current else ""
+                guard_value = _opt_bool(body.get("spoiler_guard"))
+                if guard_value is None:
+                    guard = int(current["spoiler_guard"]) if current else default_guard
+                else:
+                    guard = 1 if guard_value else 0
                 db.execute(
                     "INSERT INTO reading_progress(book_id, progress_seq, progress_cfi, spoiler_guard, updated_at) "
                     "VALUES(?,?,?,?,datetime('now')) ON CONFLICT(book_id) DO UPDATE SET "
                     "progress_seq=excluded.progress_seq, progress_cfi=excluded.progress_cfi, "
                     "spoiler_guard=excluded.spoiler_guard, updated_at=excluded.updated_at",
-                    (book_id, seq, str(body.get("progress_cfi") or ""), guard),
+                    (book_id, seq, str(cfi or ""), guard),
                 )
             row = db.query_one("SELECT * FROM reading_progress WHERE book_id=?", (book_id,))
             return dict(row) if row else {"progress_seq": 0, "spoiler_guard": 1}
@@ -737,6 +804,37 @@ class Handler(BaseHTTPRequestHandler):
             "split_confidence": result.confidence,
             "needs_llm_split": result.needs_llm,
         }
+
+
+# 静态前端用到的类型（slim 镜像里 mimetypes 的库不一定全，显式兜一层）
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
+    ".wasm": "application/wasm",
+}
+
+
+def _content_type(path: Path) -> str:
+    known = _CONTENT_TYPES.get(path.suffix.lower())
+    if known:
+        return known
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
 
 
 def _first(query: dict[str, list[str]], key: str) -> str | None:

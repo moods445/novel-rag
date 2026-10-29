@@ -32,6 +32,11 @@ class Settings:
 
     # 鉴权：本地后端仍然要求 Bearer token（架构决策 #1）
     auth_token: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_TOKEN", ""))
+    # 显式关闭鉴权（仅限受信网络 / 反代后面；Web 部署想省掉 URL 里的 token 时用）
+    disable_auth: bool = field(default_factory=lambda: _env_bool("NOVEL_RAG_DISABLE_AUTH", False))
+
+    # Web 部署：同源托管静态前端（Docker 镜像里指向 /app/web）；留空则只提供 /api
+    web_root: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_WEB_ROOT", ""))
 
     # 抽取（云端强模型）
     extract_base_url: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_EXTRACT_BASE_URL", ""))
@@ -133,6 +138,14 @@ class Settings:
         if self.embedding_dir:
             return Path(self.embedding_dir).expanduser()
         return self.home / "models" / "bge-small-zh-v1.5"
+
+    @property
+    def web_root_path(self) -> Path | None:
+        """静态前端根目录；未配置或不存在时返回 None（只提供 /api）。"""
+        if not self.web_root:
+            return None
+        path = Path(self.web_root).expanduser()
+        return path.resolve() if path.is_dir() else None
 
     def apply_overrides(self, overrides: dict) -> "Settings":
         for key, value in (overrides or {}).items():

@@ -62,6 +62,60 @@ python3 -m http.server 8088 --directory desktop/web
 # 浏览器打开 http://127.0.0.1:8088/#port=8801&token=dev
 ```
 
+## Web / Docker 部署
+
+同一个容器里跑 Python 后端并**同源托管**静态前端（没有第二个 web server，也就没有 CORS）。
+镜像**只在 GitHub Actions 上构建**（`.github/workflows/docker.yml` → `ghcr.io/moods445/novel-rag`），
+本地禁止 `docker build`：
+
+```bash
+# 手动触发一次构建（推 master 涉及 backend/desktop/web/Dockerfile 时也会自动构建）
+gh workflow run docker.yml
+gh run watch
+
+# 拉取（多架构：linux/amd64 + linux/arm64）
+docker pull ghcr.io/moods445/novel-rag:latest
+
+# 运行
+docker run -d --name novel-rag -p 8000:8000 \
+  -v novel-rag-data:/data \
+  -e NOVEL_RAG_DISABLE_AUTH=1 \
+  ghcr.io/moods445/novel-rag:latest
+# 浏览器打开 http://127.0.0.1:8000/
+```
+
+或者用 `docker-compose.yml`（**故意不写 `build:`**，只 pull）：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+| tag | 触发 |
+|---|---|
+| `latest` | 默认分支最新一次构建 |
+| `master` / `pr-N` | 分支 / PR 构建（PR 不推送） |
+| `sha-<短 hash>` | 每次提交，可回溯 |
+| `v1.2.3` | 打 tag 时 |
+
+| 环境变量 | 说明 |
+|---|---|
+| `NOVEL_RAG_HOME` | 数据目录（镜像内 `/data`，挂卷保留库/日志/模型） |
+| `NOVEL_RAG_WEB_ROOT` | 静态前端目录（镜像内 `/app/web`，已内置） |
+| `NOVEL_RAG_TOKEN` | 开启鉴权；访问时用 `http://<host>:8000/#token=<token>`，首次会记进 localStorage |
+| `NOVEL_RAG_DISABLE_AUTH` | `1` = 不校验 token。**只在受信网络 / 反向代理后面用** |
+| `NOVEL_RAG_EMBED_BACKEND` | `auto`（缺模型后台下载，约 100MB）\| `hash`（占位向量，最省资源） |
+| `NOVEL_RAG_PROXY` | 下载模型 / 调 LLM 走的代理 |
+
+镜像内置 `HEALTHCHECK`（探 `/api/health`），`docker ps` 能看到 healthy。
+首次启动会后台下载 BGE 向量模型；想跳过就用 `NOVEL_RAG_EMBED_BACKEND=hash`。
+
+本地验证完记得删掉镜像（不留在本机）：
+
+```bash
+docker rmi ghcr.io/moods445/novel-rag:latest
+docker volume rm novel-rag-data
+```
+
 ## 快速开始
 
 零第三方依赖，Python ≥ 3.11 即可（依赖标准库 `sqlite3` 的 FTS5）。

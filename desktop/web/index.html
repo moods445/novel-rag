@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Novel RAG</title>
+    <script>
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem('novelrag-theme') === 'light' ? 'light' : 'dark';
+      } catch {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    </script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -20,6 +28,7 @@
           <button class="nav-item" data-view="settings">设置</button>
         </nav>
         <div class="sidebar-foot">
+          <button class="btn theme-toggle" id="theme-toggle">切换到亮色主题</button>
           <div class="status" id="backend-status">正在启动本地后端…</div>
           <div class="hint" id="backend-hint"></div>
         </div>
@@ -52,17 +61,44 @@
               <span class="hint" id="reader-progress"></span>
             </div>
             <div class="actions">
+              <span class="hint reader-keys">← → 翻屏 · ↑ ↓ 滚动</span>
               <select id="toc-select" class="select" title="目录"></select>
               <button class="btn" id="btn-prev">上一章</button>
               <button class="btn" id="btn-next">下一章</button>
               <button class="btn" id="btn-highlight">保存划线</button>
+              <button class="btn" id="btn-chat-toggle" title="收起/展开右侧对话面板">隐藏对话</button>
             </div>
           </header>
-          <div class="reader-wrap">
-            <foliate-view id="viewer"></foliate-view>
-            <div class="reader-empty" id="reader-empty">
-              从书架选一本书开始阅读。分析模式里的引用编号点一下就会跳到这里。
+          <div class="read-body">
+            <div class="reader-wrap">
+              <foliate-view id="viewer"></foliate-view>
+              <div class="reader-empty" id="reader-empty">
+                从书架选一本书开始阅读。分析模式里的引用编号点一下就会跳到这里。
+              </div>
             </div>
+
+            <aside class="read-chat" id="read-chat">
+              <div class="chat-head">
+                <span>对话</span>
+                <div class="chat-head-actions">
+                  <label class="toggle">
+                    <input type="checkbox" id="chat-spoiler-guard" checked />
+                    <span>防剧透</span>
+                  </label>
+                  <button class="chat-close" id="btn-chat-close" title="隐藏对话面板">×</button>
+                </div>
+              </div>
+              <div class="chat-log" id="chat-log">
+                <div class="chat-empty">
+                  就当前阅读进度提问；追问会带上本轮之前的对话上下文。
+                  防剧透开启时只检索到当前进度。
+                </div>
+              </div>
+              <div class="chat-input-row">
+                <input id="chat-question" class="input" placeholder="例如：他后来怎么样了？" />
+                <button class="btn primary" id="chat-send">发送</button>
+              </div>
+            </aside>
           </div>
         </section>
 

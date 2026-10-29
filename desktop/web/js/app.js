@@ -1,6 +1,7 @@
 // 桌面壳前端入口：等待 sidecar 就绪 → 绑定四个平面。
 import { api, base64FromArrayBuffer, escapeHtml, setBackend } from './api.js';
 import * as analysis from './analysis.js';
+import * as chat from './chat.js';
 import * as settings from './settings.js';
 
 const $ = (id) => document.getElementById(id);
@@ -9,6 +10,7 @@ const els = {
   status: $('backend-status'),
   hint: $('backend-hint'),
   nav: $('nav'),
+  themeToggle: $('theme-toggle'),
   bookList: $('book-list'),
   fileInput: $('file-input'),
   readerTitle: $('reader-title'),
@@ -16,6 +18,13 @@ const els = {
   readerEmpty: $('reader-empty'),
   viewer: $('viewer'),
   tocSelect: $('toc-select'),
+  readBody: document.querySelector('#view-read .read-body'),
+  chatToggle: $('btn-chat-toggle'),
+  chatClose: $('btn-chat-close'),
+  chatLog: $('chat-log'),
+  chatQuestion: $('chat-question'),
+  chatSend: $('chat-send'),
+  chatSpoilerGuard: $('chat-spoiler-guard'),
   question: $('question'),
   btnAsk: $('btn-ask'),
   answer: $('answer'),
@@ -69,15 +78,139 @@ const state = {
 
 // ---------------------------------------------------------------- 启动
 
+const THEME_KEY = 'novelrag-theme';
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    /* 隐私模式下不可写，忽略 */
+  }
+  if (els.themeToggle) {
+    els.themeToggle.textContent = theme === 'light' ? '切换到暗色主题' : '切换到亮色主题';
+  }
+  if (state.reader && state.reader.applyTheme) state.reader.applyTheme(theme);
+}
+
+function bindTheme() {
+  applyTheme(currentTheme());
+  els.themeToggle?.addEventListener('click', () => {
+    applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+  });
+}
+
+// ---------------------------------------------------------------- 阅读页对话面板
+
+const CHAT_PANEL_KEY = 'novelrag-read-chat';
+
+function chatPanelHidden() {
+  try {
+    return localStorage.getItem(CHAT_PANEL_KEY) === 'hidden';
+  } catch {
+    return false;
+  }
+}
+
+function applyChatPanel(hidden, persist = true) {
+  els.readBody?.classList.toggle('chat-hidden', hidden);
+  if (els.chatToggle) {
+    els.chatToggle.textContent = hidden ? '显示对话' : '隐藏对话';
+    els.chatToggle.title = hidden ? '展开右侧对话面板' : '收起右侧对话面板';
+  }
+  if (!persist) return;
+  try {
+    localStorage.setItem(CHAT_PANEL_KEY, hidden ? 'hidden' : 'shown');
+  } catch {
+    /* 隐私模式下不可写，忽略 */
+  }
+}
+
+function bindChatPanel() {
+  applyChatPanel(chatPanelHidden(), false);
+  const toggle = () => applyChatPanel(!els.readBody?.classList.contains('chat-hidden'));
+  els.chatToggle?.addEventListener('click', toggle);
+  els.chatClose?.addEventListener('click', () => applyChatPanel(true));
+}
+
+// ---------------------------------------------------------------- 阅读键盘
+
+function isTypingTarget(target) {
+  if (!target || typeof target.tagName !== 'string') return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
+function bindReaderKeys() {
+  window.addEventListener('keydown', (event) => {
+    if (state.view !== 'read' || !state.reader) return;
+    if (isTypingTarget(event.target)) return;
+    state.reader.handleKeyEvent(event);
+  });
+}
+
+function handleSpoilerChange(value) {
+  analysis.setSpoilerGuard(value);
+  chat.setSpoilerGuard(value);
+  persistSpoilerGuard(value);
+}
+
+async function persistSpoilerGuard(value) {
+  if (!state.book) return;
+  try {
+    await api.put(`/api/books/${state.book.id}/progress`, { spoiler_guard: value });
+  } catch {
+    /* 进度丢失不致命 */
+  }
+}
+
+const TOKEN_KEY = 'novelrag-token';
+
+/** 浏览器/Web 模式：URL 里的 token 记住一次，之后不用每次带。 */
+function readToken(params) {
+  const fromHash = params.get('token');
+  if (fromHash) {
+    try {
+      localStorage.setItem(TOKEN_KEY, fromHash);
+    } catch {
+      /* 隐私模式忽略 */
+    }
+    return fromHash;
+  }
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 async function backendInfo() {
   const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
   if (invoke) return invoke('backend_info');
-  // 浏览器调试：http://localhost:5173/#port=8799&token=xxx
+  // 浏览器调试：http://127.0.0.1:8088/#port=8801&token=dev
   const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const token = readToken(params);
   if (params.get('port')) {
-    return { ready: true, port: Number(params.get('port')), token: params.get('token') || '', mode: 'browser', home: '' };
+    return { ready: true, port: Number(params.get('port')), token, mode: 'browser', home: '' };
   }
-  return { ready: false };
+  // Web 部署（Docker）：页面由后端同源托管，/api 就在当前站点，没有 PORT 行可读
+  return { ready: true, port: null, token, mode: 'web', home: '', log: '' };
+}
+
+/** 同源 Web 模式只能靠一次 /api/health 判断后端是否可用。 */
+async function probeWebBackend(info) {
+  const headers = info.token ? { Authorization: `Bearer ${info.token}` } : {};
+  try {
+    const res = await fetch('/api/health', { headers, cache: 'no-store' });
+    if (res.status === 401) return 'auth';
+    return res.ok ? 'ok' : 'down';
+  } catch {
+    return 'down';
+  }
 }
 
 async function waitForBackend() {
@@ -90,7 +223,18 @@ async function waitForBackend() {
       /* 壳还没建好，继续等 */
     }
     if (info && info.log) state.logPath = info.log;
-    if (info && info.ready && info.port) return info;
+    if (info && info.mode === 'web') {
+      const probe = await probeWebBackend(info);
+      if (probe === 'ok') return info;
+      // token 不对就别死等 120s，直接把怎么办告诉用户
+      if (probe === 'auth') {
+        throw new Error(
+          '后端要求 token：请用 /#token=xxx 打开本页，或让服务端设置 NOVEL_RAG_DISABLE_AUTH=1'
+        );
+      }
+    } else if (info && info.ready && info.port) {
+      return info;
+    }
     // 子进程已经死了就别再等到超时，把原因直接甩出来
     if (info && info.error) throw new Error(info.error);
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -100,16 +244,32 @@ async function waitForBackend() {
   );
 }
 
+/** 浏览器/Web 模式下 hash 就是配置（port/token）：改了要重新走一遍启动流程。 */
+function bindHashReload() {
+  if (window.__TAURI__) return;
+  window.addEventListener('hashchange', () => location.reload());
+}
+
 async function boot() {
+  bindTheme();
+  bindHashReload();
   els.status.textContent = '正在启动本地后端…';
   try {
     const info = await waitForBackend();
     setBackend(info);
-    els.status.textContent = `后端就绪 :${info.port}`;
-    els.hint.textContent = info.mode === 'python-dev'
-      ? `开发模式（源码）· 日志：${info.log}`
-      : `日志：${info.log}`;
-    els.hint.title = info.log;
+    if (info.mode === 'web') {
+      els.status.textContent = '后端就绪（同源 Web）';
+      els.hint.textContent = info.token
+        ? 'Web 部署 · 已用 URL 里的 token 鉴权'
+        : 'Web 部署 · 服务端未启用 token';
+      els.hint.title = '';
+    } else {
+      els.status.textContent = `后端就绪 :${info.port}`;
+      els.hint.textContent = info.mode === 'python-dev'
+        ? `开发模式（源码）· 日志：${info.log}`
+        : `日志：${info.log}`;
+      els.hint.title = info.log;
+    }
   } catch (error) {
     els.status.classList.add('bad');
     els.status.textContent = `后端启动失败：${error.message}`;
@@ -122,6 +282,8 @@ async function boot() {
 
   bindNav();
   bindShelf();
+  bindChatPanel();
+  bindReaderKeys();
   bindReaderToolbar();
   analysis.init({
     question: els.question,
@@ -136,6 +298,14 @@ async function boot() {
     relations: els.relations,
     timeline: els.timeline,
     spoilerGuard: els.spoilerGuard,
+    onSpoilerChange: handleSpoilerChange,
+  });
+  chat.init({
+    log: els.chatLog,
+    question: els.chatQuestion,
+    send: els.chatSend,
+    spoilerGuard: els.chatSpoilerGuard,
+    onSpoilerChange: handleSpoilerChange,
   });
   settings.init({
     ner: els.ner,
@@ -295,6 +465,9 @@ async function selectBook(book) {
     els.readerProgress.textContent = `进度 seq ${state.progressSeq} · ${state.chapters.length} 章`;
 
     analysis.setBook(book, state.progressSeq, progress.spoiler_guard !== 0);
+    chat.setBook(book);
+    chat.setProgress(state.progressSeq);
+    chat.setSpoilerGuard(progress.spoiler_guard !== 0);
     await openReader(book);
     fillToc();
     showView('read');
@@ -321,6 +494,7 @@ async function openReader(book) {
       if (chapter && chapter.seq_end) {
         state.progressSeq = chapter.seq_end;
         analysis.setProgress(chapter.seq_end);
+        chat.setProgress(chapter.seq_end);
         els.readerProgress.textContent = `第${chapter.idx + 1}章 · seq ${chapter.seq_end}`;
         if (els.tocSelect) els.tocSelect.value = chapter.nav_href || '';
       }

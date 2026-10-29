@@ -25,6 +25,9 @@ SYSTEM = (
 
 PROMPT = """请依据下面的资料回答问题。
 
+【对话历史】（只用于理解追问中的指代，不能当作事实依据）
+{history}
+
 【用户问题】
 {question}
 
@@ -35,7 +38,11 @@ PROMPT = """请依据下面的资料回答问题。
 1. 用中文回答，简洁准确。
 2. 每条结论后用 [编号] 标注依据。
 3. 资料标注「未经抽取校验」的部分，若被引用需说明其可信度较低。
+4. 对话历史只用于理解指代，事实与引用必须来自下方资料。
 """
+
+HISTORY_MAX_MESSAGES = 8
+HISTORY_MESSAGE_CHARS = 600
 
 NO_CONTEXT_ANSWER = (
     "在当前可检索范围内没有找到与该问题相关的资料。"
@@ -58,11 +65,13 @@ class QaService:
         progress_seq: int | None = None,
         spoiler_guard: bool | None = None,
         budget_chars: int | None = None,
+        history: list[dict] | None = None,
     ) -> dict:
         question = (question or "").strip()
         if not question:
             raise ValueError("空问题")
 
+        messages = _normalize_history(history)
         progress, guard = self._resolve_progress(book_id, progress_seq, spoiler_guard)
 
         retriever = Retriever(self.db, self.embedder, self.settings)
@@ -93,7 +102,11 @@ class QaService:
         try:
             answer = self.gateway.complete(
                 "query",
-                PROMPT.format(question=question, context=compiled.text),
+                PROMPT.format(
+                    question=question,
+                    context=compiled.text,
+                    history=_history_text(messages),
+                ),
                 system=SYSTEM,
                 max_tokens=1024,
             )
@@ -147,6 +160,31 @@ class QaService:
             ],
         ]
         return answer + "\n".join(appendix)
+
+
+def _normalize_history(history: list[dict] | None) -> list[dict[str, str]]:
+    """只保留最近若干条合法的 user/assistant 消息，并截断单条长度。"""
+    if not isinstance(history, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in history[-HISTORY_MAX_MESSAGES:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        if role not in ("user", "assistant"):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        messages.append({"role": role, "content": content[:HISTORY_MESSAGE_CHARS]})
+    return messages
+
+
+def _history_text(messages: list[dict[str, str]]) -> str:
+    if not messages:
+        return "（无）"
+    labels = {"user": "用户", "assistant": "助手"}
+    return "\n".join(f"{labels[m['role']]}：{m['content']}" for m in messages)
 
 
 def ensure_citation_text(answer: str, compiled) -> bool:

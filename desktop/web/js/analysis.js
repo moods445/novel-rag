@@ -13,6 +13,10 @@ export function init(refs) {
   });
   els.btnStart?.addEventListener('click', () => withTask('start'));
   els.btnPause?.addEventListener('click', () => withTask('pause'));
+  els.spoilerGuard?.addEventListener('change', () => {
+    state.spoilerGuard = els.spoilerGuard.checked;
+    if (typeof els.onSpoilerChange === 'function') els.onSpoilerChange(state.spoilerGuard);
+  });
 }
 
 export function setBook(book, progressSeq, spoilerGuard) {
@@ -26,8 +30,13 @@ export function setProgress(seq) {
   state.progressSeq = seq;
 }
 
+export function setSpoilerGuard(value) {
+  state.spoilerGuard = Boolean(value);
+  if (els.spoilerGuard) els.spoilerGuard.checked = state.spoilerGuard;
+}
+
 export function spoilerGuard() {
-  return els.spoilerGuard ? els.spoilerGuard.checked : true;
+  return state.spoilerGuard;
 }
 
 async function ask() {

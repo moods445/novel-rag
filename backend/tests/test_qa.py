@@ -90,6 +90,30 @@ class QaTest(unittest.TestCase):
         self.assertEqual(result["coverage"]["done"], 3)
         self.assertEqual(result["coverage"]["ratio"], 1.0)
 
+    def test_history_is_trimmed_and_passed_to_prompt(self) -> None:
+        prompts: list[str] = []
+
+        class RecordingProvider:
+            name = "recording"
+
+            def complete(self, prompt, *, system=None, max_tokens=1024):
+                prompts.append(prompt)
+                return "回答 [1]。"
+
+        self.app.gateway.query = RecordingProvider()
+        history = [{"role": "user", "content": f"旧问题{i}号 " + "字" * 700} for i in range(12)]
+        result = self.app.qa.ask(
+            self.book_id,
+            "他又做了什么",
+            progress_seq=99,
+            spoiler_guard=False,
+            history=history,
+        )
+        self.assertIn("【对话历史】", prompts[0])
+        self.assertIn("旧问题11号", prompts[0])
+        self.assertNotIn("旧问题3号", prompts[0])  # 只保留最近 8 条
+        self.assertEqual(result["citations"][0]["n"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

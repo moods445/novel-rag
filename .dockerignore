@@ -1,0 +1,24 @@
+# 只影响 docker build 的上下文体积（镜像由 CI 构建）
+.git
+.github
+.codegraph
+.trae-html-share-packages
+_research
+anx-reader
+docs
+novels
+models
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.db
+*.db-wal
+*.db-shm
+backend/tests
+backend/scripts
+backend/dist
+backend/build
+desktop/src-tauri
+desktop/web/vendor
+node_modules
+dist
