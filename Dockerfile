@@ -23,25 +23,38 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ---------------------------------------------------------------- 源码
+# ---------------------------------------------------------------- 依赖层
+# 只有 pyproject.toml 参与这一层的哈希：改 backend/novel_rag 或 desktop/web
+# 都不会触发重装依赖（onnxruntime 等约 200MB，是整次构建最贵的一步）。
 COPY backend/pyproject.toml /app/backend/pyproject.toml
-COPY backend/novel_rag /app/backend/novel_rag
-# foliate-js 不入库，构建期拉取（要有外网）；只留运行时需要的文件
-COPY desktop/scripts/prepare_vendor.py /app/desktop/scripts/prepare_vendor.py
-COPY desktop/web /app/desktop/web
+RUN python -c "import os, pathlib, tomllib; \
+p = tomllib.loads(pathlib.Path('/app/backend/pyproject.toml').read_text())['project']; \
+ex = [e for e in os.environ.get('PIP_EXTRAS', '').split(',') if e]; \
+print(*p['dependencies'], *[d for e in ex for d in p['optional-dependencies'][e]], sep='\n')" > /tmp/requirements.txt \
+ && python -m pip install --no-cache-dir --upgrade pip \
+ && python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+ && rm -f /tmp/requirements.txt
 
-# ---------------------------------------------------------------- 安装 + 组装（单层）
-# 后端依赖、前端 vendor 拉取与静态目录组装、运行用户创建合成一个 RUN，
-# 少一层镜像；代价是任一源码变动都会让这一层缓存失效。
-# 随机端口 + 单向 token 的原始设定只适用于桌面壳；Web 部署固定 8000 端口，
-# 数据全部落在 /data（挂卷），进程以非 root 跑。
-RUN python -m pip install --no-cache-dir --upgrade pip \
- && python -m pip install --no-cache-dir "/app/backend[${PIP_EXTRAS}]" \
- && python /app/desktop/scripts/prepare_vendor.py \
+# ---------------------------------------------------------------- 前端 vendor 层
+# foliate-js 不入库，构建期拉取（要有外网）；只留运行时需要的文件。
+# 只依赖 prepare_vendor.py 本身，改前端代码不会重新下载。
+COPY desktop/scripts/prepare_vendor.py /app/desktop/scripts/prepare_vendor.py
+RUN python /app/desktop/scripts/prepare_vendor.py
+
+# ---------------------------------------------------------------- 源码层
+# 依赖已经装好，这里只装本地包（--no-deps）再组装静态目录：
+# 日常改代码只重建这一层。
+COPY backend/novel_rag /app/backend/novel_rag
+COPY desktop/web /app/desktop/web
+RUN python -m pip install --no-cache-dir --no-deps /app/backend \
  && mkdir -p /app/web \
  && cp -a /app/desktop/web/. /app/web/ \
- && rm -rf /app/desktop /app/backend \
- && useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+ && rm -rf /app/desktop /app/backend
+
+# ---------------------------------------------------------------- 运行用户
+# 随机端口 + 单向 token 的原始设定只适用于桌面壳；Web 部署固定 8000 端口，
+# 数据全部落在 /data（挂卷），进程以非 root 跑。
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
  && mkdir -p /data \
  && chown -R app:app /data /app
 USER app

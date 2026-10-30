@@ -73,7 +73,7 @@ python3 -m http.server 8088 --directory desktop/web
 gh workflow run docker.yml
 gh run watch
 
-# 拉取（多架构：linux/amd64 + linux/arm64）
+# 拉取（linux/amd64）
 docker pull ghcr.io/moods445/novel-rag:latest
 
 # 运行

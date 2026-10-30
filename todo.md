@@ -13,7 +13,7 @@
 - [x] Web 部署：后端 `NOVEL_RAG_WEB_ROOT` 同源托管静态前端（非 /api 走静态分支、目录穿越 404、index.html no-cache），`/api/**` 仍校验 Bearer
 - [x] Web 部署：`NOVEL_RAG_DISABLE_AUTH` 显式关闭鉴权；前端同源 Web 模式 + token 记进 localStorage + hash 变更重载
 - [x] 镜像：`Dockerfile`（python:3.12-slim、内置前端、非 root、HEALTHCHECK）、`.dockerignore`、`docker-compose.yml`（只 pull 不 build）
-- [x] CI：`.github/workflows/docker.yml` 在 Actions 构建 amd64/arm64 推 ghcr + 启动烟测（本地禁止构建）
+- [x] CI：`.github/workflows/docker.yml` 在 Actions 构建 amd64 推 ghcr + 启动烟测（本地禁止构建）
 - [x] 验证：CI 跑通（run 40852721727 绿），本地 pull 镜像实测（healthy / 导入 121 章 / 同源 Web / 阅读键盘 / 对话面板隐藏），测完删除容器+卷+镜像
 - [x] 后端：新增 `tests/test_web_static.py`（静态托管、穿越防护、/api 仍要 token），全套 134 通过
 - [x] 阅读：键盘加固 —— 主文档 capture 绑键、iframe 焦点双绑、连按串行排队（不再被 foliate 换章锁丢键）、渲染器未就绪不吞键、新增 PgUp/PgDn/空格翻屏、无书时给提示
@@ -54,7 +54,8 @@
 
 - [ ] 是否需要「翻页/滚动」排版模式切换开关（当前固定为连贯滚动）
 
-## Dockerfile 层数精简
+## 镜像构建提速（拆分缓存层 / 去掉 arm64）
 
-- [x] `Dockerfile`：把 pip 安装 / vendor 拉取 / 静态目录组装 / 建用户这三个 RUN 合成一层（源码 COPY 提前）
-- [ ] 验证：push 后 GitHub Actions `build-image` 跑通（测试 + 镜像 + 烟测）
+- [x] `Dockerfile`：拆回分层 —— 依赖层只依赖 `backend/pyproject.toml`，vendor 层只依赖 `prepare_vendor.py`，源码层才装本地包并组装静态目录（之前合并成单层，导致改一行源码就重装 onnxruntime 等依赖）
+- [x] CI：只构建 `linux/amd64`，去掉 arm64 与 QEMU 模拟（部署机都是 x86，arm64 靠模拟要多花约 250s）
+- [ ] 验证：push 后 GitHub Actions `build-image` 跑通（测试 + 镜像 + 烟测），并记录构建耗时
