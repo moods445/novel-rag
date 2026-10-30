@@ -428,5 +428,59 @@ class SplitBackendTest(unittest.TestCase):
         app.db.close()
 
 
+class LlmDiagnosticsTest(unittest.TestCase):
+    """「已配置模型却提示未生效」必须能给出唯一原因。"""
+
+    def _app(self, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Settings(
+            home=Path(tmp.name),
+            embedding_backend="hash",
+            opencode_config="/nonexistent.json",
+            **kwargs,
+        )
+        app = build_app(settings=settings, db_path=str(Path(tmp.name) / "d.db"))
+        self.addCleanup(app.db.close)
+        return app, settings
+
+    def test_provider_without_models_reports_missing_model(self) -> None:
+        raw = json.dumps([{"name": "naked", "base_url": "http://127.0.0.1:9000/v1"}])
+        app, _ = self._app(custom_providers=raw, llm_provider="naked")
+        summary = app.effective_summary()
+        self.assertFalse(summary["llm_ready"]["query"])
+        self.assertIn("没有可用模型", summary["llm_detail"]["reason"])
+
+    def test_configured_provider_has_empty_reason(self) -> None:
+        raw = json.dumps(
+            [
+                {
+                    "name": "local",
+                    "base_url": "http://127.0.0.1:9000/v1",
+                    "models": ["qwen2.5-7b"],
+                }
+            ]
+        )
+        app, _ = self._app(
+            custom_providers=raw, llm_provider="local", llm_model="qwen2.5-7b"
+        )
+        summary = app.effective_summary()
+        self.assertTrue(summary["llm_ready"]["query"])
+        self.assertEqual(summary["llm_detail"]["reason"], "")
+        self.assertEqual(summary["llm_detail"]["resolved_query"], "local:qwen2.5-7b")
+
+    def test_half_configured_env_is_explained(self) -> None:
+        app, _ = self._app(query_base_url="http://127.0.0.1:9000/v1")
+        summary = app.effective_summary()
+        self.assertFalse(summary["llm_ready"]["query"])
+        self.assertIn("缺少 NOVEL_RAG_QUERY_MODEL", summary["llm_detail"]["reason"])
+
+    def test_unknown_provider_is_explained(self) -> None:
+        app, _ = self._app(llm_provider="ghost")
+        summary = app.effective_summary()
+        self.assertFalse(summary["llm_ready"]["query"])
+        self.assertIn("找不到", summary["llm_detail"]["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -180,6 +180,7 @@ class App:
         """当前真正生效的组件（设置页展示 & 排查问答降级用）。"""
         from ..llm.gateway import EchoProvider
 
+        query_ready = not isinstance(self.gateway.query, EchoProvider)
         return {
             "ner_backend": self.settings.ner_backend,
             "split_backend": self.settings.split_backend,
@@ -191,47 +192,49 @@ class App:
             },
             "llm_ready": {
                 "extract": not isinstance(self.gateway.extract, EchoProvider),
-                "query": not isinstance(self.gateway.query, EchoProvider),
+                "query": query_ready,
+            },
+            # 未生效时给出唯一原因，避免用户「明明配了模型」却只看到一句笼统提示
+            "llm_detail": {
+                "provider": self.settings.llm_provider,
+                "model": self.settings.llm_model,
+                "query_base_url_set": bool(self.settings.query_base_url),
+                "query_model_set": bool(self.settings.query_model),
+                "resolved_query": getattr(self.gateway.query, "name", ""),
+                "reason": "" if query_ready else self._llm_reason(),
             },
         }
 
+    def _llm_reason(self) -> str:
+        """问答模型未生效的具体原因（按优先级取第一个命中项）。"""
+        s = self.settings
+        if s.query_base_url and not s.query_model:
+            return "已配置 NOVEL_RAG_QUERY_BASE_URL，但缺少 NOVEL_RAG_QUERY_MODEL"
+        if s.query_model and not s.query_base_url:
+            return "已配置 NOVEL_RAG_QUERY_MODEL，但缺少 NOVEL_RAG_QUERY_BASE_URL"
+        if not s.llm_provider:
+            return "未选择 provider，也没有配置 NOVEL_RAG_QUERY_* 环境变量"
+        spec = opencode.merged(s.opencode_config, s.custom_providers).get(s.llm_provider)
+        if spec is None:
+            return f"provider「{s.llm_provider}」在 opencode 配置和手动添加列表里都找不到"
+        if not (s.llm_model or spec.models):
+            return f"provider「{s.llm_provider}」没有可用模型：请在设置里选择或直接输入模型名"
+        return f"provider「{s.llm_provider}」解析模型失败（当前模型：{s.llm_model or '未选择'}）"
+
     def vector_status(self, book_id: str) -> dict:
         payload = index_store.vector_status(self.db, book_id, self.embedder.model_id)
+        paused = self._vector_paused(book_id)
         with self.lock:
             job = dict(self.vector_jobs.get(book_id) or {})
         payload.update(
             {
                 "book_id": book_id,
                 "backend": type(self.embedder).__name__,
-                "job": job or {"state": "idle"},
+                "paused": paused,
+                "job": job or ({"state": "paused"} if paused else {"state": "idle"}),
             }
         )
         return payload
-
-    def start_vector_rebuild(self, book_id: str) -> dict:
-        """后台重建整本书的向量（逐章推进，进度可在页面看到）。"""
-        with self.lock:
-            job = self.vector_jobs.get(book_id) or {}
-            if job.get("state") in ("queued", "running"):
-                raise InvalidInput("向量重建正在进行中")
-            self.vector_jobs[book_id] = {
-                "state": "queued",
-                "chapter_idx": None,
-                "chapter_no": None,
-                "indexed": 0,
-                "message": "",
-                "started_at": self._now(),
-                "updated_at": self._now(),
-            }
-            thread = threading.Thread(
-                target=self._vector_rebuild_worker,
-                args=(book_id,),
-                name=f"vector-rebuild-{book_id}",
-                daemon=True,
-            )
-            thread.start()
-        logging.getLogger("novel_rag.vectors").info("rebuild queued: %s", book_id)
-        return self.vector_status(book_id)
 
     def _update_vector_job(self, book_id: str, **changes: Any) -> None:
         with self.lock:
@@ -240,65 +243,269 @@ class App:
             job["updated_at"] = self._now()
             self.vector_jobs[book_id] = job
 
-    def _vector_rebuild_worker(self, book_id: str) -> None:
+    def _vector_pause_requested(self, book_id: str) -> bool:
+        with self.lock:
+            job = self.vector_jobs.get(book_id) or {}
+        return bool(job.get("pause_requested"))
+
+    # 暂停状态落库到 extensions：重启服务后仍然生效，不会被自动续跑覆盖
+    def _vector_paused(self, book_id: str) -> bool:
+        row = self.db.query_one(
+            "SELECT payload FROM extensions WHERE book_id=? AND key='vector_pause'", (book_id,)
+        )
+        if row is None:
+            return False
+        try:
+            return bool(json.loads(row["payload"]).get("paused"))
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return False
+
+    def _set_vector_paused(self, book_id: str, paused: bool) -> None:
+        if paused:
+            self.db.execute(
+                "INSERT OR REPLACE INTO extensions(book_id, key, payload) VALUES(?, 'vector_pause', ?)",
+                (book_id, json.dumps({"paused": True})),
+            )
+        else:
+            self.db.execute(
+                "DELETE FROM extensions WHERE book_id=? AND key='vector_pause'", (book_id,)
+            )
+
+    def start_vector_build(
+        self, book_id: str, *, rebuild: bool = False, auto: bool = False
+    ) -> dict:
+        """后台构建向量。
+
+        ``rebuild=True``：清空后从头重建（换模型/怀疑索引坏了时用）；
+        ``rebuild=False``：从数据库已有进度继续，只处理未完成的章节。
+        ``auto=True``：巡检线程触发的自动续跑，保留失败重试次数（手动点击会清零）。
+        """
+        logger = logging.getLogger("novel_rag.vectors")
+        with self.lock:
+            prev = dict(self.vector_jobs.get(book_id) or {})
+            if prev.get("state") in ("queued", "running", "pausing"):
+                raise InvalidInput("向量构建正在进行中")
+        status = index_store.vector_status(self.db, book_id, self.embedder.model_id)
+        if not status["paragraphs"]:
+            raise InvalidInput("这本书还没有可向量化的段落")
+        self._set_vector_paused(book_id, False)
+        with self.lock:
+            self.vector_jobs[book_id] = {
+                "state": "queued",
+                "mode": "rebuild" if rebuild else "continue",
+                "attempts": int(prev.get("attempts") or 0) if auto else 0,
+                "chapter_idx": None,
+                "chapter_no": None,
+                "indexed": 0 if rebuild else status["indexed"],
+                "chapters_total": status["chapters_total"],
+                "chapters_pending": (
+                    status["chapters_total"]
+                    if rebuild
+                    else status["chapters_total"] - status["chapters_done"]
+                ),
+                "pause_requested": False,
+                "message": "排队中…",
+                "started_at": self._now(),
+                "updated_at": self._now(),
+            }
+            threading.Thread(
+                target=self._vector_worker,
+                args=(book_id, rebuild),
+                name=f"vector-build-{book_id}",
+                daemon=True,
+            ).start()
+        logger.info(
+            "vector build queued: book=%s mode=%s", book_id, "rebuild" if rebuild else "continue"
+        )
+        return self.vector_status(book_id)
+
+    def pause_vector_build(self, book_id: str) -> dict:
+        """暂停：当前章节建完后停止，进度保留，随时可「继续」。"""
+        logger = logging.getLogger("novel_rag.vectors")
+        status = index_store.vector_status(self.db, book_id, self.embedder.model_id)
+        complete = bool(status["paragraphs"]) and status["indexed"] >= status["paragraphs"]
+        with self.lock:
+            job = dict(self.vector_jobs.get(book_id) or {})
+            active = job.get("state") in ("queued", "running", "pausing")
+            if active:
+                job["pause_requested"] = True
+                job["state"] = "pausing"
+                job["message"] = "暂停中：当前章节完成后停止"
+            elif not complete:
+                job["state"] = "paused"
+                job["pause_requested"] = True
+                job["message"] = "已暂停"
+            self.vector_jobs[book_id] = job
+        if not complete:
+            self._set_vector_paused(book_id, True)
+            logger.info(
+                "vector build pause %s: book=%s",
+                "requested" if active else "applied",
+                book_id,
+            )
+        return self.vector_status(book_id)
+
+    def _vector_worker(self, book_id: str, rebuild: bool) -> None:
         logger = logging.getLogger("novel_rag.vectors")
         embedder = self.embedder
         try:
-            chapters = self.db.query(
-                "SELECT idx, title FROM chapters WHERE book_id=? ORDER BY idx", (book_id,)
-            )
-            total = len(chapters)
-            cleared = index_store.clear_vectors(self.db, book_id)
+            status = index_store.vector_status(self.db, book_id, embedder.model_id)
+            total = status["chapters_total"]
+            if rebuild:
+                cleared = index_store.clear_vectors(self.db, book_id)
+                baseline = 0
+                pending = list(status["chapters"])
+            else:
+                cleared = 0
+                baseline = status["indexed"]
+                pending = [c for c in status["chapters"] if not c["done"]]
             self._update_vector_job(
                 book_id,
                 state="running",
                 chapters_total=total,
-                indexed=0,
-                message="正在重建向量…",
+                chapters_pending=len(pending),
+                indexed=baseline,
+                message="正在重建向量…" if rebuild else "正在补齐向量…",
             )
             logger.info(
-                "rebuild start: book=%s chapters=%d cleared=%d model=%s",
+                "vector build start: book=%s mode=%s chapters=%d pending=%d cleared=%d model=%s",
                 book_id,
+                "rebuild" if rebuild else "continue",
                 total,
+                len(pending),
                 cleared,
                 embedder.model_id,
             )
-            indexed = 0
-            for pos, chapter in enumerate(chapters):
+
+            if not pending:
                 self._update_vector_job(
                     book_id,
-                    chapter_idx=int(chapter["idx"]),
-                    chapter_no=pos + 1,
+                    state="done",
+                    chapter_idx=None,
+                    chapter_no=None,
+                    indexed=baseline,
+                    message="向量已是最新，无需构建",
+                )
+                return
+
+            indexed = baseline
+            stopped = False
+            for pos, chapter in enumerate(pending):
+                # 暂停检查点：只在章节边界停，保证当前章节是完整的
+                if self._vector_pause_requested(book_id):
+                    stopped = True
+                    break
+                chapter_idx = int(chapter["chapter_idx"])
+                self._update_vector_job(
+                    book_id,
+                    chapter_idx=chapter_idx,
+                    chapter_no=int(chapter["chapter_no"]),
+                    message=f"正在构建第 {chapter['chapter_no']} 章…",
                 )
                 count = index_store.index_vectors(
                     self.db,
                     book_id,
                     embedder,
-                    chapter_idx=int(chapter["idx"]),
+                    chapter_idx=chapter_idx,
                     batch=self.settings.embedding_batch,
                 )
                 indexed += count
                 self._update_vector_job(book_id, indexed=indexed)
-                if (pos + 1) % 10 == 0 or pos + 1 == total:
+                if (pos + 1) % 10 == 0 or pos + 1 == len(pending):
                     logger.info(
-                        "rebuild progress: book=%s %d/%d chapters, %d vectors",
+                        "vector build progress: book=%s %d/%d chapters, %d vectors",
                         book_id,
                         pos + 1,
-                        total,
+                        len(pending),
                         indexed,
                     )
+
+            if stopped:
+                final = index_store.vector_status(self.db, book_id, embedder.model_id)
+                self._set_vector_paused(book_id, True)
+                self._update_vector_job(
+                    book_id,
+                    state="paused",
+                    chapter_idx=None,
+                    chapter_no=None,
+                    indexed=final["indexed"],
+                    message=(
+                        f"已暂停：{final['chapters_done']}/{final['chapters_total']} 章完成，"
+                        f"{final['indexed']}/{final['paragraphs']} 段"
+                    ),
+                )
+                logger.info("vector build paused: book=%s indexed=%d", book_id, final["indexed"])
+                return
+
+            final = index_store.vector_status(self.db, book_id, embedder.model_id)
+            self._set_vector_paused(book_id, False)
             self._update_vector_job(
                 book_id,
                 state="done",
                 chapter_idx=None,
                 chapter_no=None,
-                indexed=indexed,
-                message=f"重建完成：{total} 章 / {indexed} 段",
+                indexed=final["indexed"],
+                message=(
+                    "重建完成：" if rebuild else "向量已补齐："
+                ) + f"{final['chapters_total']} 章 / {final['indexed']} 段",
             )
-            logger.info("rebuild done: book=%s chapters=%d vectors=%d", book_id, total, indexed)
+            logger.info(
+                "vector build done: book=%s chapters=%d vectors=%d",
+                book_id,
+                final["chapters_total"],
+                final["indexed"],
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("rebuild failed: book=%s", book_id)
-            self._update_vector_job(book_id, state="failed", message=f"重建失败：{exc}")
+            logger.exception("vector build failed: book=%s", book_id)
+            with self.lock:
+                attempts = int((self.vector_jobs.get(book_id) or {}).get("attempts") or 0) + 1
+            self._update_vector_job(
+                book_id, state="failed", attempts=attempts, message=f"向量构建失败：{exc}"
+            )
+
+    def resume_vector_builds(self) -> list[str]:
+        """扫描所有书：向量没建完的自动从断点继续（用户手动暂停的除外）。
+
+        服务重启后调用，用来把「构建到一半被重启打断」的书自动补完；
+        运行中也由 supervisor 定期调用，导入新书后无需手动点继续。
+        """
+        logger = logging.getLogger("novel_rag.vectors")
+        started: list[str] = []
+        for row in self.db.query("SELECT id FROM books ORDER BY created_at"):
+            book_id = row["id"]
+            if self._vector_paused(book_id):
+                continue
+            with self.lock:
+                job = self.vector_jobs.get(book_id) or {}
+            if job.get("state") in ("queued", "running", "pausing"):
+                continue
+            if job.get("state") == "failed" and int(job.get("attempts") or 0) >= 3:
+                continue
+            status = index_store.vector_status(self.db, book_id, self.embedder.model_id)
+            if not status["paragraphs"] or status["indexed"] >= status["paragraphs"]:
+                continue
+            try:
+                self.start_vector_build(book_id, rebuild=False, auto=True)
+                started.append(book_id)
+            except InvalidInput:
+                continue
+        if started:
+            logger.info("vector auto resume: %s", started)
+        return started
+
+    def start_vector_supervisor(self, interval: float = 60.0) -> None:
+        """定期检查未构建完的书（守护线程，进程退出即结束）。"""
+
+        def worker() -> None:
+            logger = logging.getLogger("novel_rag.vectors")
+            while True:
+                time.sleep(interval)
+                try:
+                    self.resume_vector_builds()
+                except Exception:  # noqa: BLE001 - 巡检失败不能拖垮服务
+                    logger.exception("vector supervisor failed")
+
+        threading.Thread(target=worker, name="vector-supervisor", daemon=True).start()
 
     # -------------------------------------------------------- provider 管理
 
@@ -829,7 +1036,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.app.vector_status(book_id)
 
         if rest == ["vectors", "rebuild"] and method == "POST":
-            return self.app.start_vector_rebuild(book_id)
+            return self.app.start_vector_build(book_id, rebuild=True)
+
+        if rest == ["vectors", "continue"] and method == "POST":
+            return self.app.start_vector_build(book_id, rebuild=False)
+
+        if rest == ["vectors", "pause"] and method == "POST":
+            return self.app.pause_vector_build(book_id)
 
         if rest == ["coverage"]:
             return {

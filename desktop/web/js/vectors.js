@@ -1,8 +1,11 @@
-// 向量化页面：按章节显示 embedding 进度，支持整本重建。
+// 向量化页面：按章节显示 embedding 进度，支持继续 / 暂停 / 整本重建。
 //
 // 进度来源两层：
 //   - 数据库统计（当前 model_id 的真实覆盖，刷新/重启都不丢）
-//   - 后台任务状态（正在处理第几章，仅在重建期间有意义）
+//   - 后台任务状态（正在处理第几章，仅在构建期间有意义）
+//
+// 断点续跑：服务重启或页面刷新后，数据库里已建好的段落就是断点，
+// 点「继续构建」只补未完成的章节；服务启动时也会自动续跑。
 import { api, escapeHtml } from './api.js';
 
 const els = {};
@@ -22,6 +25,8 @@ export function init(refs) {
     refresh();
   });
   els.refreshBtn?.addEventListener('click', () => refresh());
+  els.continueBtn?.addEventListener('click', continueBuild);
+  els.pauseBtn?.addEventListener('click', pause);
   els.rebuildBtn?.addEventListener('click', rebuild);
 }
 
@@ -93,7 +98,7 @@ async function rebuild() {
   );
   if (!ok) return;
   state.busy = true;
-  if (els.rebuildBtn) els.rebuildBtn.disabled = true;
+  if (els.hint) els.hint.textContent = '重建任务提交中…';
   try {
     await api.post(`/api/books/${state.bookId}/vectors/rebuild`, {});
     await refresh();
@@ -101,16 +106,42 @@ async function rebuild() {
     if (els.hint) els.hint.textContent = `重建失败：${error.message}`;
   } finally {
     state.busy = false;
-    if (els.rebuildBtn) els.rebuildBtn.disabled = false;
+    await refresh();
+  }
+}
+
+async function continueBuild() {
+  if (!state.bookId || state.busy) return;
+  state.busy = true;
+  if (els.hint) els.hint.textContent = '继续构建任务提交中…';
+  try {
+    await api.post(`/api/books/${state.bookId}/vectors/continue`, {});
+    await refresh();
+  } catch (error) {
+    if (els.hint) els.hint.textContent = `继续构建失败：${error.message}`;
+  } finally {
+    state.busy = false;
+    await refresh();
+  }
+}
+
+async function pause() {
+  if (!state.bookId) return;
+  try {
+    await api.post(`/api/books/${state.bookId}/vectors/pause`, {});
+    await refresh();
+  } catch (error) {
+    if (els.hint) els.hint.textContent = `暂停失败：${error.message}`;
   }
 }
 
 function render(data) {
   const job = data.job || {};
-  const running = job.state === 'queued' || job.state === 'running';
+  const active = ['queued', 'running', 'pausing'].includes(job.state);
+  const running = active;
   state.running = running;
   const total = data.paragraphs || 0;
-  const indexed = running && typeof job.indexed === 'number' ? job.indexed : data.indexed || 0;
+  const indexed = active && typeof job.indexed === 'number' ? job.indexed : data.indexed || 0;
   const percent = total ? Math.min(100, Math.round((indexed / total) * 100)) : 0;
 
   if (els.bar) els.bar.style.width = `${percent}%`;
@@ -118,9 +149,11 @@ function render(data) {
     const labels = {
       idle: '待命',
       queued: '排队中',
-      running: '重建中',
-      done: '最近一次重建完成',
-      failed: '最近一次重建失败',
+      running: job.mode === 'rebuild' ? '重建中' : '继续构建中',
+      pausing: '暂停中（当前章节完成后停止）',
+      paused: '已暂停（可点「继续构建」恢复）',
+      done: '最近一次构建完成',
+      failed: '最近一次构建失败',
     };
     els.state.textContent = labels[job.state] || '待命';
   }
@@ -140,13 +173,18 @@ function render(data) {
     ].join('');
   }
 
+  if (els.continueBtn) els.continueBtn.disabled = active || state.busy;
+  if (els.pauseBtn) els.pauseBtn.disabled = !active;
+  if (els.rebuildBtn) els.rebuildBtn.disabled = active || state.busy;
+
   if (els.hint) {
     const parts = [];
     if (job.message) parts.push(job.message);
     if (job.state === 'failed') parts.push('详见「日志」页');
     if (!parts.length) {
       parts.push(
-        '向量检索按当前模型按章节增量建立；导入后后台分析会自动补齐，也可以在这里整本重建。'
+        '向量检索按当前模型按章节增量建立；服务重启会自动续跑未建完的书，'
+          + '也可以在这里「继续构建」或整本重建。'
       );
     }
     els.hint.textContent = parts.join(' · ');
@@ -174,7 +212,8 @@ function renderChapters(chapters, job) {
     els.chapters.innerHTML = '<span class="hint">这本书还没有章节。</span>';
     return;
   }
-  const activeIdx = job.state === 'running' ? job.chapter_idx : null;
+  const activeIdx =
+    job.state === 'running' || job.state === 'pausing' ? job.chapter_idx : null;
   els.chapters.innerHTML = chapters
     .map((chapter) => {
       const status = chapter.done ? 'done' : chapter.indexed > 0 ? 'partial' : 'pending';

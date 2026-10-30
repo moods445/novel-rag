@@ -177,7 +177,9 @@
             <div class="actions">
               <select id="vector-book" class="select" title="选择书"></select>
               <button class="btn" id="btn-vector-refresh">刷新</button>
-              <button class="btn primary" id="btn-vector-rebuild">重建向量</button>
+              <button class="btn primary" id="btn-vector-continue">继续构建</button>
+              <button class="btn" id="btn-vector-pause">暂停</button>
+              <button class="btn" id="btn-vector-rebuild">重建向量</button>
             </div>
           </header>
 
@@ -275,7 +277,14 @@
               <div class="panel-head"><span>推理模型</span></div>
               <p class="hint" id="llm-config-path"></p>
               <select id="set-llm-provider" class="select wide"></select>
-              <select id="set-llm-model" class="select wide" style="margin-top: 8px"></select>
+              <input
+                id="set-llm-model"
+                class="input wide"
+                list="llm-model-options"
+                style="margin-top: 8px"
+                placeholder="模型名（可直接输入，也可从下拉建议里选）"
+              />
+              <datalist id="llm-model-options"></datalist>
               <p class="hint" id="llm-effective"></p>
               <p class="hint">
                 列表包含 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>）

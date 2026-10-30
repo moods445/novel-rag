@@ -38,6 +38,18 @@
 - [x] 验证：后端 unittest（132 通过，不含 test_cli）；`bash -n deploy.sh`；浏览器实测向量页/日志页/设置页；curl 验证 121 章重建与问答降级文案
 - [x] 测试：`test_qa` 增「provider 报错暴露真实原因」「向量状态按章节统计」，`test_web_static` 增日志尾部接口
 
+## 本轮（问答模型诊断 / 向量续跑与暂停）
+
+- [x] 后端：`effective_summary` 增加 `llm_detail.reason`，把「未生效」拆成具体原因（未选 provider / provider 不存在 / 没有模型名 / `NOVEL_RAG_QUERY_*` 只配了一半），设置页直接显示
+- [x] 前端：模型选择改为「可选建议的输入框」（datalist），provider 没声明模型列表时也能直接填模型名
+- [x] 后端：`POST /api/books/{id}/vectors/continue` 从数据库断点继续（只补未完成章节）；`/vectors/rebuild` 仍为清空重建
+- [x] 后端：`POST /api/books/{id}/vectors/pause` 章节边界暂停；暂停标记写入 `extensions`，重启后仍生效
+- [x] 后端：启动时 `resume_vector_builds()` 自动续跑所有未建完的书，运行中由 supervisor 每 60s 巡检；手动暂停的书跳过
+- [x] 前端：向量页新增「继续构建」「暂停」按钮，状态展示 `pausing/paused`，按状态禁用按钮
+- [x] 测试：新增 `tests/test_vectors.py`（继续只补缺章、重建全量、暂停/继续、重启自动续跑、暂停标记跨重启）；`test_settings` 新增 `LlmDiagnosticsTest`
+- [x] 验证：后端 unittest 全套通过（含 test_cli 需非沙箱环境）
+- [x] 文档：README 更新向量页说明与 `/vectors/continue`、`/vectors/pause` 接口
+
 # 待确认
 
 - [ ] 是否需要「翻页/滚动」排版模式切换开关（当前固定为连贯滚动）

@@ -15,7 +15,9 @@ export function init(refs) {
     const model = provider?.models?.[0] || '';
     save({ llm_provider: els.llmProvider.value, llm_model: model });
   });
-  els.llmModel?.addEventListener('change', () => save({ llm_model: els.llmModel.value }));
+  els.llmModel?.addEventListener('change', () =>
+    save({ llm_model: (els.llmModel.value || '').trim() })
+  );
   els.embedEndpoint?.addEventListener('change', () => save({ embedding_endpoint: els.embedEndpoint.value }));
   els.proxySave?.addEventListener('click', saveProxy);
   els.providerAdd?.addEventListener('click', addProvider);
@@ -48,10 +50,9 @@ function fill(data) {
     values.llm_provider
   );
   const active = providers.find((p) => p.name === values.llm_provider) || providers[0];
-  fillSelect(
-    els.llmModel,
-    (active?.models || []).map((m) => ({ id: m, label: m })),
-    values.llm_model
+  fillModelOptions(
+    active?.models || [],
+    values.llm_model || active?.models?.[0] || ''
   );
 
   fillSelect(els.embedEndpoint, options.embedding_endpoint, values.embedding_endpoint || '');
@@ -81,8 +82,12 @@ function fill(data) {
       els.llmEffective.textContent = `问答模型已生效：${llm.query || ''}`;
       els.llmEffective.style.color = '';
     } else {
-      els.llmEffective.textContent =
-        '问答模型未生效（当前走离线摘录）：请选择 provider 与模型，或配置 NOVEL_RAG_QUERY_* 环境变量';
+      // 后端返回唯一原因（provider 找不到 / 缺少模型名 / 环境变量缺一半），
+      // 不再只给一句笼统提示，避免「明明配了」却查不出问题
+      const reason = effective.llm_detail?.reason || '';
+      els.llmEffective.textContent = `问答模型未生效（当前走离线摘录）：${
+        reason || '请选择 provider 与模型，或配置 NOVEL_RAG_QUERY_* 环境变量'
+      }`;
       els.llmEffective.style.color = 'var(--danger)';
     }
   }
@@ -101,6 +106,20 @@ function fill(data) {
       2
     );
   }
+}
+
+function fillModelOptions(models, value) {
+  const list = document.getElementById('llm-model-options');
+  if (list) {
+    list.innerHTML = '';
+    for (const model of models || []) {
+      const option = document.createElement('option');
+      option.value = model;
+      list.appendChild(option);
+    }
+  }
+  // 用输入框而不是下拉框：provider 没有声明模型列表时也能直接填模型名
+  if (els.llmModel) els.llmModel.value = value || '';
 }
 
 function fillSelect(select, items, value) {

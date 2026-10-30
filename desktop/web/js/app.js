@@ -73,6 +73,8 @@ const els = {
   // vectors
   vectorBook: $('vector-book'),
   vectorRefresh: $('btn-vector-refresh'),
+  vectorContinue: $('btn-vector-continue'),
+  vectorPause: $('btn-vector-pause'),
   vectorRebuild: $('btn-vector-rebuild'),
   vectorState: $('vector-state'),
   vectorBar: $('vector-bar'),
@@ -379,6 +381,8 @@ async function boot() {
   vectors.init({
     bookSelect: els.vectorBook,
     refreshBtn: els.vectorRefresh,
+    continueBtn: els.vectorContinue,
+    pauseBtn: els.vectorPause,
     rebuildBtn: els.vectorRebuild,
     state: els.vectorState,
     bar: els.vectorBar,

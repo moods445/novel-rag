@@ -75,6 +75,13 @@ def main(argv: list[str] | None = None) -> int:
     if paused:
         logger.warning("resume paused tasks: %s", paused)
 
+    # 向量构建可能被上次重启打断：启动即扫描未建完的书并从断点续跑；
+    # 运行中再由 supervisor 定期巡检（用户手动暂停的除外）。
+    resumed = app.resume_vector_builds()
+    if resumed:
+        logger.info("vector build resumed: %s", resumed)
+    app.start_vector_supervisor()
+
     try:
         httpd = serve(app, args.host, args.port)
     except Exception:  # noqa: BLE001

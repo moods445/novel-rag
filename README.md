@@ -139,7 +139,9 @@ docker compose pull && docker compose up -d
 界面侧栏新增两个页面：
 
 - **向量**：按章节显示向量化进度（已向量化段数、完成章数、当前/下一章、逐章明细），
-  可对整本执行「重建向量」（后台逐章推进，进度实时刷新）。
+  支持「继续构建」「暂停」「重建向量」。构建以数据库里已建好的段落为断点：
+  服务重启或构建中断后会自动从断点续跑；暂停在章节边界生效（当前章节建完即停），
+  暂停标记落库，重启后不会被自动续跑覆盖，点「继续构建」即可恢复。
 - **日志**：直接查看容器内 `backend.log` 尾部（200–2000 行、级别着色、自动刷新）。
 
 本地验证完记得删掉镜像和数据（不留在本机）：
@@ -229,7 +231,9 @@ python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 | GET | `/api/books/{id}/chapters` | 目录（含章节指纹与 spine） |
 | GET | `/api/books/{id}/epub` | 交给 foliate-js 渲染的 EPUB |
 | GET | `/api/books/{id}/coverage` | 分析覆盖度（部分可用语义） |
-| GET | `/api/books/{id}/vectors` | 向量化进度（按章节明细、当前/下一章、重建任务状态） |
+| GET | `/api/books/{id}/vectors` | 向量化进度（按章节明细、当前/下一章、构建任务状态、暂停标记） |
+| POST | `/api/books/{id}/vectors/continue` | 从断点继续构建（只补未完成章节） |
+| POST | `/api/books/{id}/vectors/pause` | 暂停构建（当前章节完成后停止，可再继续） |
 | POST | `/api/books/{id}/vectors/rebuild` | 后台整本重建向量（逐章推进） |
 | GET | `/api/logs?source=backend\|sidecar&lines=500` | 读取日志尾部（1–2000 行） |
 | GET/PUT | `/api/books/{id}/progress` | 阅读进度与防剧透开关 |
