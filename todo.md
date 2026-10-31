@@ -54,6 +54,26 @@
 
 - [ ] 是否需要「翻页/滚动」排版模式切换开关（当前固定为连贯滚动）
 
+## 本轮（provider 只走应用内配置，摘掉 opencode 依赖）
+
+- [x] 后端：`llm/opencode.py` 不再自动探测 `~/.config/opencode/*` —— 不给路径就返回空；`load_config(None) == {}`
+- [x] 后端：`opencode_config`（`NOVEL_RAG_OPENCODE_CONFIG`）降级为**仅本地测试**开关，显式指定才读
+- [x] 后端：`resolve()` 去掉「找不到就顶上第一个（magpie）」的兜底，选中的 provider 不存在时如实报错
+- [x] 后端：设置页/问答降级文案改为「应用内 provider 列表」（不再提 opencode 配置）
+- [x] 前端：设置页说明改为「provider 只有设置页添加这一个来源（存本机数据库）」，模型列表提示至少填一个
+- [x] 文档：README / architecture / 桌面说明 / compose 注释 / `deploy.sh --help` 同步
+- [x] 测试：`test_no_default_path_discovery`、`test_missing_provider_is_not_silently_replaced`；全套 154 通过
+
+## 本轮（问答模型「已配置却提示未配置」）
+
+- [x] 后端：`llm/opencode.py` 同时兼容两种配置 schema —— 旧版 `provider` + `options.baseURL`、新版 `providers` + `settings.baseURL`（模型列表支持 dict/list，`model` 支持字符串或对象），避免 v2 配置里 0 个 provider
+- [x] 后端：抽出 `gateway.query_reason()` 作为「未生效原因」唯一来源，设置页 `effective_summary` 与问答降级文案共用（不再只给一句笼统的「未配置」）
+- [x] 后端：问答抽取式兜底把具体原因（没选中 / provider 找不到 / 没模型名 / 环境变量只配一半）写进回答前缀
+- [x] 后端：`POST /api/providers` 在当前没选中 provider 时自动选上新加的那个（含首个模型），不再「加了却没用上」
+- [x] 前端：provider 下拉补「（未选择）」项，未选中时不再显示成第一个 provider；provider 无模型声明时模型名回退到 opencode 默认 `model` 并作为 datalist 建议
+- [x] 测试：新增 `OpenCodeV2ConfigTest`（v2 解析 / resolve / 网关 / 不泄漏 key）与 3 个诊断用例（v2 生效、配置有但未选中、UI 新增自动选中）
+- [x] 验证：本机 `~/.config/opencode/opencode.json`（v2 格式）现可解析出 `magpie` 并解析到模型；后端 unittest 153 通过
+
 ## 镜像构建提速（拆分缓存层 / 去掉 arm64）
 
 - [x] `Dockerfile`：拆回分层 —— 依赖层只依赖 `backend/pyproject.toml`，vendor 层只依赖 `prepare_vendor.py`，源码层才装本地包并组装静态目录（之前合并成单层，导致改一行源码就重装 onnxruntime 等依赖）

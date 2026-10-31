@@ -287,8 +287,8 @@
               <datalist id="llm-model-options"></datalist>
               <p class="hint" id="llm-effective"></p>
               <p class="hint">
-                列表包含 opencode 配置里的 provider（默认 <code>~/.config/opencode/opencode.json</code>）
-                以及下方手动添加的 provider，抽取与查询共用同一个模型。未配置时退回离线模式：
+                provider 只有「设置页添加」这一个来源（保存在本机数据库），抽取与查询共用同一个模型；
+                也可以用环境变量 <code>NOVEL_RAG_QUERY_*</code> 直接指定。未配置时退回离线模式：
                 抽取用启发式、问答用原文摘录。
               </p>
 
@@ -296,7 +296,7 @@
               <input id="provider-name" class="input wide" placeholder="名称（唯一，如 my-provider）" />
               <input id="provider-base-url" class="input wide" placeholder="Base URL（如 https://api.example.com/v1）" />
               <input id="provider-api-key" type="password" class="input wide" placeholder="API Key（可选）" />
-              <input id="provider-models" class="input wide" placeholder="模型列表，逗号分隔（可选）" />
+              <input id="provider-models" class="input wide" placeholder="模型名，逗号分隔（如 gpt-4o-mini，至少填一个）" />
               <div class="model-row">
                 <span id="provider-hint" class="hint"></span>
                 <button class="btn" id="btn-provider-add">添加</button>

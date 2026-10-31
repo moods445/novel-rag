@@ -231,8 +231,10 @@ jieba 全书只跑一次（606K 字约 42s），结果缓存在 `extensions` 表
 - `GET/POST /api/models/embedding/download`：模型下载状态 / 触发下载（启动时也会自动补齐）
 - `GET /api/books/{id}/audit`：实体归一裁决与被拒事实的审计流水
 
-LLM 直接复用 opencode 的 provider 配置（`~/.config/opencode/opencode.json`），
-解析时兼容 jsonc 注释与尾逗号，抽取与查询可用不同超时（240s / 120s）。
+LLM 的 provider 只在设置页添加（存本机数据库的 `custom_providers`），抽取与查询共用同一个模型，
+可用 `NOVEL_RAG_QUERY_*` / `NOVEL_RAG_EXTRACT_*` 环境变量覆盖；两者都可用不同超时（240s / 120s）。
+本地测试可显式指定 `NOVEL_RAG_OPENCODE_CONFIG` 让网关额外读取 opencode 的 provider 配置（兼容 jsonc 注释与尾逗号），
+默认不探测任何路径。
 
 ---
 

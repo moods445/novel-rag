@@ -26,5 +26,5 @@ Novel RAG · 便携版（Windows）
 
 推理模型
 --------
-默认读取 %USERPROFILE%\.config\opencode\opencode.json 里的 provider。
-没有配置时退化为离线模式：抽取走本地规则，问答只做原文摘录，不联网。
+在「设置 → 推理模型」里添加 provider（名称 / Base URL / API Key / 模型名），
+保存在本机数据库，重启不丢。没有配置时退化为离线模式：抽取走本地规则，问答只做原文摘录，不联网。

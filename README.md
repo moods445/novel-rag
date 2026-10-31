@@ -21,7 +21,7 @@ backend/
     retrieve/  P3 检索：三路召回 → 融合 → 双闸门 → ★ContextCompiler
     qa/        P4 消费：问答服务 + 5 个只读工具
     api/       P5/P6：本地 HTTP 接口（Bearer token）+ 设置/模型管理
-    llm/       provider 网关、opencode 配置解析、BGE embedding
+    llm/       provider 网关（应用内 provider 解析）、BGE embedding
     settings_store.py / embedding_models.py  界面可改设置、模型下载
   scripts/     fetch_embedding_model.py
   tests/       107 个 unittest
@@ -128,7 +128,7 @@ docker compose pull && docker compose up -d
 | `NOVEL_RAG_DISABLE_AUTH` | `1` = 不校验 token。**只在受信网络 / 反向代理后面用** |
 | `NOVEL_RAG_EMBED_BACKEND` | `auto`（缺模型后台下载，约 100MB）\| `hash`（占位向量，最省资源） |
 | `NOVEL_RAG_PROXY` | 下载模型 / 调 LLM 走的代理 |
-| `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 问答模型（OpenAI 兼容）。容器里没有桌面端 opencode 配置，**不配就只能返回原文摘录** |
+| `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 问答模型（OpenAI 兼容）。也可以不改环境变量，直接在设置页「添加 provider」，效果一样；**两边都没有就只能返回原文摘录** |
 | `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 抽取模型；不配时建议与查询用同一个端点 |
 | `NOVEL_RAG_LLM_TIMEOUT` / `_QUERY` | 抽取 / 问答请求超时（秒），默认 240 / 120 |
 | `NOVEL_RAG_LOG_LEVEL` | 日志级别（页面「日志」读取 `/data/logs/backend.log`） |
@@ -208,7 +208,7 @@ curl -H 'Authorization: Bearer devtoken' -H 'Content-Type: application/json' \
 | 人名识别 | `auto`(jieba∪正则) / `jieba` / `regex` | jieba 词性标注 `nr`，CPU、词典约 5MB；不装则自动退回正则 |
 | 章节识别 | `auto`(规则+LLM兜底) / `rule` / `llm` | 规则命中率不足时才调 LLM，也可强制总是走 LLM |
 | 语义检索 | `bge`(BGE-small-zh-v1.5) / `hash` / `auto` | ONNX + CPU；缺失时自动后台下载 |
-| 推理 | opencode 配置 + 界面添加的任意 provider | 默认读 `~/.config/opencode/opencode.json`，也可在设置页手动添加 |
+| 推理 | 设置页添加的任意 OpenAI 兼容 provider | 填 Base URL / API Key / 模型名即可，存本机数据库；抽取与查询共用 |
 
 模型下载默认先直连 HuggingFace，失败后自动切换国内镜像（`hf-mirror.com`）；
 下载源与网络代理都能在设置页修改，代理同时作用于 LLM 请求。
@@ -261,12 +261,12 @@ python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 | `NOVEL_RAG_LOG_DIR` | 日志目录，默认 `<home>/logs` |
 | `NOVEL_RAG_LOG_LEVEL` | 日志级别，默认 `INFO` |
 | `NOVEL_RAG_TOKEN` | Bearer token，空则随机生成并在启动时打印 |
-| `NOVEL_RAG_LLM_PROVIDER` / `NOVEL_RAG_LLM_MODEL` | 从 opencode 配置解析 provider，如 `magpie` / `qnaigc/qiniu/conatus-free` |
-| `NOVEL_RAG_OPENCODE_CONFIG` | opencode 配置文件路径（默认 `~/.config/opencode/opencode.json`） |
+| `NOVEL_RAG_LLM_PROVIDER` / `NOVEL_RAG_LLM_MODEL` | 选中的 provider 与模型名（通常由设置页维护，不用手填） |
+| `NOVEL_RAG_OPENCODE_CONFIG` | **仅本地测试**：显式指定 opencode 配置文件，让网关额外读取其中的 provider；默认不读、不探测任何路径 |
 | `NOVEL_RAG_PROXY` | 网络代理（`http://host:port`），作用于模型下载与 LLM 请求 |
 | `NOVEL_RAG_HF_ENDPOINT` / `HF_ENDPOINT` | 模型下载源；留空则官方直连失败后自动换国内镜像 |
 | `NOVEL_RAG_CUSTOM_PROVIDERS` | 界面添加的 provider（JSON），一般由设置页维护 |
-| `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 覆盖式直连（优先级高于 opencode） |
+| `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 覆盖式直连（优先级最高） |
 | `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 同上，用于查询 |
 | `NOVEL_RAG_NER_BACKEND` | `auto` / `jieba` / `regex` |
 | `NOVEL_RAG_SPLIT_BACKEND` | `auto` / `rule` / `llm` |

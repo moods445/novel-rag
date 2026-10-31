@@ -63,7 +63,8 @@ usage() {
   -h, --help         显示这段帮助
 
 说明:
-  不配置 --query-* 时容器里没有可用的问答模型，问答只会返回原文摘录
+  模型也可以启动后在设置页「添加 provider」里填（存容器内 /data 数据库，重启不丢）。
+  不配置 --query-* 且没在设置页添加时，问答只会返回原文摘录
   （页面会提示「问答模型未配置」）。这些值也会写进 .env，下次直接沿用。
 
 例子:
@@ -162,7 +163,7 @@ services:
       NOVEL_RAG_DISABLE_AUTH: "${NOVEL_RAG_DISABLE_AUTH:-1}"
       NOVEL_RAG_TOKEN: "${NOVEL_RAG_TOKEN:-}"
       NOVEL_RAG_EMBED_BACKEND: "${NOVEL_RAG_EMBED_BACKEND:-auto}"
-      # 模型调用（容器里没有桌面端的 opencode 配置，只能靠环境变量注入）
+      # 模型调用（也可以在设置页「添加 provider」，存容器内 /data 的数据库，效果一样）
       NOVEL_RAG_QUERY_BASE_URL: "${NOVEL_RAG_QUERY_BASE_URL:-}"
       NOVEL_RAG_QUERY_API_KEY: "${NOVEL_RAG_QUERY_API_KEY:-}"
       NOVEL_RAG_QUERY_MODEL: "${NOVEL_RAG_QUERY_MODEL:-}"

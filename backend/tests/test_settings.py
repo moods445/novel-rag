@@ -39,6 +39,65 @@ OPENCODE_JSONC = """
 """
 
 
+# opencode v2 的 schema：providers（复数）+ settings，而不是 provider + options
+OPENCODE_V2 = """
+{
+  "providers": {
+    "magpie": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "name": "Magpie",
+      "settings": {
+        "baseURL": "http://127.0.0.1:3425/v1",
+        "apiKey": "sk-v2-key",
+      },
+      "models": {},
+    },
+  },
+  "model": "qnaigc/qiniu/conatus-free",
+}
+"""
+
+
+class OpenCodeV2ConfigTest(unittest.TestCase):
+    """新版 opencode 配置（providers/settings）必须同样能解析出 provider。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "opencode.json"
+        self.path.write_text(OPENCODE_V2, encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_providers_plural_schema(self) -> None:
+        specs = opencode.providers(self.path)
+        self.assertIn("magpie", specs)
+        spec = specs["magpie"]
+        self.assertEqual(spec.base_url, "http://127.0.0.1:3425/v1")
+        self.assertEqual(spec.api_key, "sk-v2-key")
+        self.assertEqual(spec.label, "Magpie")
+
+    def test_resolve_falls_back_to_default_model(self) -> None:
+        spec, model = opencode.resolve("magpie", None, path=self.path)
+        assert spec is not None
+        self.assertEqual(model, "qnaigc/qiniu/conatus-free")
+
+    def test_describe_hides_api_key(self) -> None:
+        described = opencode.describe(self.path)
+        self.assertNotIn("sk-v2-key", json.dumps(described, ensure_ascii=False))
+        self.assertTrue(described["providers"][0]["has_key"])
+
+    def test_gateway_uses_v2_provider(self) -> None:
+        settings = Settings(
+            home=Path(self._tmp.name),
+            llm_provider="magpie",
+            opencode_config=str(self.path),
+        )
+        gateway = from_settings(settings)
+        self.assertIsInstance(gateway.query, OpenAICompatProvider)
+        self.assertEqual(gateway.query.name, "magpie:qnaigc/qiniu/conatus-free")
+
+
 class OpenCodeConfigTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -71,10 +130,17 @@ class OpenCodeConfigTest(unittest.TestCase):
         assert spec2 is not None
         self.assertEqual(model2, "agnes/agnes-3.0-flash")
 
-    def test_missing_provider_falls_back_to_first(self) -> None:
-        spec, _model = opencode.resolve("nope", None, path=self.path)
-        assert spec is not None
-        self.assertEqual(spec.name, "magpie")
+    def test_missing_provider_is_not_silently_replaced(self) -> None:
+        """选中的 provider 不存在时必须报错，不能悄悄换成别的（否则原因与事实不符）。"""
+        spec, model = opencode.resolve("nope", None, path=self.path)
+        self.assertIsNone(spec)
+        self.assertEqual(model, "")
+
+    def test_no_default_path_discovery(self) -> None:
+        """应用默认不读本机 opencode 配置：不给路径就是空，避免「偷偷生效」。"""
+        self.assertEqual(opencode.providers(None), {})
+        self.assertEqual(opencode.describe()["providers"], [])
+        self.assertIsNone(opencode.describe()["config_path"])
 
     def test_describe_has_no_api_key(self) -> None:
         described = opencode.describe(self.path)
@@ -434,12 +500,13 @@ class LlmDiagnosticsTest(unittest.TestCase):
     def _app(self, **kwargs):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        settings = Settings(
+        options = dict(
             home=Path(tmp.name),
             embedding_backend="hash",
             opencode_config="/nonexistent.json",
-            **kwargs,
         )
+        options.update(kwargs)
+        settings = Settings(**options)
         app = build_app(settings=settings, db_path=str(Path(tmp.name) / "d.db"))
         self.addCleanup(app.db.close)
         return app, settings
@@ -480,6 +547,43 @@ class LlmDiagnosticsTest(unittest.TestCase):
         summary = app.effective_summary()
         self.assertFalse(summary["llm_ready"]["query"])
         self.assertIn("找不到", summary["llm_detail"]["reason"])
+
+    def test_v2_config_provider_works_without_manual_selection_input(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "opencode.json"
+        path.write_text(OPENCODE_V2, encoding="utf-8")
+        app, _ = self._app(opencode_config=str(path), llm_provider="magpie")
+        summary = app.effective_summary()
+        self.assertTrue(summary["llm_ready"]["query"])
+        self.assertEqual(
+            summary["llm_detail"]["resolved_query"], "magpie:qnaigc/qiniu/conatus-free"
+        )
+
+    def test_provider_present_but_unselected_is_explained(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "opencode.json"
+        path.write_text(OPENCODE_V2, encoding="utf-8")
+        app, _ = self._app(opencode_config=str(path))
+        summary = app.effective_summary()
+        self.assertFalse(summary["llm_ready"]["query"])
+        self.assertIn("还没选中", summary["llm_detail"]["reason"])
+
+    def test_ui_added_provider_is_auto_selected(self) -> None:
+        """界面加了 provider 却没选中时，问答仍然是离线摘录——必须替用户选上。"""
+        app, settings = self._app()
+        app.save_provider(
+            {
+                "name": "my-api",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "sk-xxx",
+                "models": "m1, m2",
+            }
+        )
+        self.assertEqual(settings.llm_provider, "my-api")
+        self.assertEqual(settings.llm_model, "m1")
+        self.assertTrue(app.effective_summary()["llm_ready"]["query"])
 
 
 if __name__ == "__main__":

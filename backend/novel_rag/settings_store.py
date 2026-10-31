@@ -99,6 +99,7 @@ class SettingsStore:
         from .logging_setup import log_paths
 
         embed_status = embedding_models.model_status(settings.resolved_embed_dir)
+        # provider 来自设置页（数据库）；只有本地测试显式指定 opencode 配置时才多一份
         providers = opencode.describe(settings.opencode_config, settings.custom_providers)
         # custom_providers 里含 api_key，不回显；providers 列表只暴露 has_key
         overrides = self.get_all()

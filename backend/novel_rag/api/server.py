@@ -206,20 +206,8 @@ class App:
         }
 
     def _llm_reason(self) -> str:
-        """问答模型未生效的具体原因（按优先级取第一个命中项）。"""
-        s = self.settings
-        if s.query_base_url and not s.query_model:
-            return "已配置 NOVEL_RAG_QUERY_BASE_URL，但缺少 NOVEL_RAG_QUERY_MODEL"
-        if s.query_model and not s.query_base_url:
-            return "已配置 NOVEL_RAG_QUERY_MODEL，但缺少 NOVEL_RAG_QUERY_BASE_URL"
-        if not s.llm_provider:
-            return "未选择 provider，也没有配置 NOVEL_RAG_QUERY_* 环境变量"
-        spec = opencode.merged(s.opencode_config, s.custom_providers).get(s.llm_provider)
-        if spec is None:
-            return f"provider「{s.llm_provider}」在 opencode 配置和手动添加列表里都找不到"
-        if not (s.llm_model or spec.models):
-            return f"provider「{s.llm_provider}」没有可用模型：请在设置里选择或直接输入模型名"
-        return f"provider「{s.llm_provider}」解析模型失败（当前模型：{s.llm_model or '未选择'}）"
+        """问答模型未生效的具体原因（与问答降级提示共用同一套判断）。"""
+        return gateway_mod.query_reason(self.settings)
 
     def vector_status(self, book_id: str) -> dict:
         payload = index_store.vector_status(self.db, book_id, self.embedder.model_id)
@@ -510,7 +498,11 @@ class App:
     # -------------------------------------------------------- provider 管理
 
     def providers_payload(self) -> dict:
-        """opencode 配置与界面添加的 provider 合并后的清单（不含 api_key）。"""
+        """应用内添加的 provider 清单（不含 api_key）。
+
+        只有显式指定 ``NOVEL_RAG_OPENCODE_CONFIG`` 时（本地测试）才会把
+        本机 opencode 配置里的 provider 也并进来。
+        """
         payload = opencode.describe(self.settings.opencode_config, self.settings.custom_providers)
         payload["values"] = {
             "llm_provider": self.settings.llm_provider,
@@ -554,7 +546,7 @@ class App:
             label=str(body.get("label") or name).strip() or name,
             custom=True,
         )
-        self._store_custom(current)
+        self._store_custom(current, autoselect=(name, models))
         logging.getLogger("novel_rag.api").info(
             "provider saved: %s (%s)", name, base_url
         )
@@ -580,11 +572,22 @@ class App:
         self.refresh()
         return self.providers_payload()
 
-    def _store_custom(self, specs) -> None:
-        text = json.dumps(
-            [spec.to_storage() for spec in specs.values()], ensure_ascii=False
-        )
-        self.store.update({"custom_providers": text})
+    def _store_custom(self, specs, *, autoselect: tuple[str, list[str]] | None = None) -> None:
+        """落库自定义 provider；还没选中任何 provider 时顺手把新加的选上。
+
+        只在「什么都没选」时自动选，避免覆盖用户已有的选择。
+        """
+        changes: dict[str, str] = {
+            "custom_providers": json.dumps(
+                [spec.to_storage() for spec in specs.values()], ensure_ascii=False
+            )
+        }
+        if autoselect is not None and not self.settings.llm_provider:
+            name, models = autoselect
+            changes["llm_provider"] = name
+            if models:
+                changes["llm_model"] = models[0]
+        self.store.update(changes)
         self.refresh()
 
     def recover_tasks(self) -> list[str]:
@@ -856,7 +859,7 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["models"]:
             return self.app.store.describe(self.app.settings)["options"]
 
-        # provider：opencode 配置 + 界面添加（可增删）
+        # provider：设置页添加（可增删）
         if tail == ["providers"]:
             if method == "GET":
                 return self.app.providers_payload()

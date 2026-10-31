@@ -1,17 +1,19 @@
-"""从 opencode 配置里读取 provider（默认 ``~/.config/opencode/opencode.json``）。
+"""provider 定义解析。
 
-opencode 的 provider 声明是 OpenAI 兼容的：
+应用里用到的 provider **只有两个来源**：
+
+1. 设置页手动添加、存在本机数据库里的 provider（``custom_providers``，主力路径）；
+2. 显式指定的本机 opencode 配置文件（``NOVEL_RAG_OPENCODE_CONFIG``）——
+   仅用于本地测试 / 调试，**不会**去自动扫描 ``~/.config/opencode``。
+
+第 2 种能认两种 schema（旧版 ``provider`` + ``options``，v2 ``providers`` + ``settings``）：
 
     "provider": {
-      "magpie": {
-        "npm": "@ai-sdk/openai-compatible",
-        "options": {"baseURL": "...", "apiKey": "..."},
-        "models": {"qnaigc/qiniu/conatus-free": {"name": "..."}}
-      }
+      "magpie": {"options": {"baseURL": "...", "apiKey": "..."}, "models": {...}}
     }
 
-因此这里只做两件事：解析配置（兼容 jsonc 注释与尾逗号），
-把 provider 翻译成 :class:`OpenAICompatProvider`。
+本模块只做两件事：解析配置（兼容 jsonc 注释与尾逗号），
+把 provider 翻译成 :class:`ProviderSpec`。
 """
 
 from __future__ import annotations
@@ -21,12 +23,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_PATHS = (
-    Path("~/.config/opencode/opencode.json").expanduser(),
-    Path("~/.config/opencode/opencode.jsonc").expanduser(),
-    Path("~/.opencode/opencode.json").expanduser(),
-)
-
 
 @dataclass(slots=True)
 class ProviderSpec:
@@ -35,6 +31,7 @@ class ProviderSpec:
     api_key: str = ""
     models: list[str] = field(default_factory=list)
     label: str = ""
+    # True = 设置页添加的（应用内配置）；False = 本地测试用的 opencode 配置
     custom: bool = False
 
     def to_dict(self) -> dict:
@@ -67,34 +64,75 @@ def _strip_jsonc(text: str) -> str:
 
 
 def load_config(path: str | Path | None = None) -> dict:
-    candidates = [Path(path).expanduser()] if path else list(DEFAULT_PATHS)
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        try:
-            return json.loads(_strip_jsonc(candidate.read_text(encoding="utf-8")))
-        except json.JSONDecodeError:
-            continue
-    return {}
+    """读取显式指定的配置文件；没给路径就不读（不做任何默认路径探测）。"""
+    if not path:
+        return {}
+    candidate = Path(path).expanduser()
+    if not candidate.exists():
+        return {}
+    try:
+        return json.loads(_strip_jsonc(candidate.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _model_names(raw: dict) -> list[str]:
+    """``models`` 可能是 ``{id: {...}}``（旧版）也可能是列表（新版/手写）。"""
+    models = raw.get("models") or []
+    if isinstance(models, dict):
+        return [str(k) for k in models.keys()]
+    if not isinstance(models, list):
+        return []
+    out: list[str] = []
+    for item in models:
+        if isinstance(item, dict):
+            name = item.get("id") or item.get("name")
+            if name:
+                out.append(str(name))
+        elif str(item).strip():
+            out.append(str(item).strip())
+    return out
+
+
+def _spec_from(name: str, raw: dict) -> ProviderSpec | None:
+    """从一条 provider 声明里取出 base_url / api_key / models。
+
+    两种 schema 都要认，否则「明明配了却查不到」：
+    - 旧版：``"provider": {"x": {"npm": ..., "options": {"baseURL": ...}}}``
+    - v2  ：``"providers": {"x": {"package": ..., "settings": {"baseURL": ...}}}``
+    """
+    options = raw.get("options") if isinstance(raw.get("options"), dict) else {}
+    settings = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
+    merged = {**settings, **options}  # options 优先（同名字段冲突时按旧版语义）
+    base_url = str(
+        merged.get("baseURL") or merged.get("baseUrl") or merged.get("base_url") or ""
+    ).strip()
+    if not base_url:
+        return None
+    return ProviderSpec(
+        name=name,
+        base_url=base_url,
+        api_key=str(merged.get("apiKey") or merged.get("api_key") or ""),
+        models=_model_names(raw),
+        label=str(raw.get("name") or name),
+    )
 
 
 def providers(path: str | Path | None = None) -> dict[str, ProviderSpec]:
+    """本地测试用的 opencode 配置里的 provider（``path`` 为空则返回空字典）。"""
     config = load_config(path)
     out: dict[str, ProviderSpec] = {}
-    for name, raw in (config.get("provider") or {}).items():
-        if not isinstance(raw, dict):
+    # 旧版用 provider，v2 用 providers；同名以先出现的为准
+    for key in ("provider", "providers"):
+        block = config.get(key)
+        if not isinstance(block, dict):
             continue
-        options = raw.get("options") or {}
-        base_url = str(options.get("baseURL") or options.get("base_url") or "")
-        if not base_url:
-            continue
-        out[name] = ProviderSpec(
-            name=name,
-            base_url=base_url,
-            api_key=str(options.get("apiKey") or options.get("api_key") or ""),
-            models=list((raw.get("models") or {}).keys()),
-            label=str(raw.get("name") or name),
-        )
+        for name, raw in block.items():
+            if not isinstance(raw, dict) or name in out:
+                continue
+            spec = _spec_from(str(name), raw)
+            if spec is not None:
+                out[str(name)] = spec
     return out
 
 
@@ -149,14 +187,18 @@ def parse_custom(raw: str | dict | list | None) -> dict[str, ProviderSpec]:
 def merged(
     path: str | Path | None = None, custom: str | dict | list | None = None
 ) -> dict[str, ProviderSpec]:
-    """opencode 配置 + 界面添加的 provider；同名时以界面添加的为准。"""
+    """应用内 provider（``custom``）+ 可选的本地测试配置；同名时以应用内的为准。"""
     out = providers(path)
     out.update(parse_custom(custom))
     return out
 
 
 def default_model(path: str | Path | None = None) -> str:
-    return str(load_config(path).get("model") or "")
+    """本地测试配置里声明的默认 model（没有就空串）。"""
+    raw = load_config(path).get("model")
+    if isinstance(raw, dict):  # v2 里可能写成 {"provider": ..., "id": ...}
+        raw = raw.get("id") or raw.get("name")
+    return str(raw or "")
 
 
 def resolve(
@@ -166,18 +208,16 @@ def resolve(
     path: str | Path | None = None,
     custom: str | dict | list | None = None,
 ):
-    """返回 ``(spec, model)``；找不到返回 ``(None, "")``。"""
+    """返回 ``(spec, model)``；找不到就 ``(None, "")``（不再随便挑一个顶上）。"""
     available = merged(path, custom)
-    if not available:
-        return None, ""
     spec = available.get(provider_name or "")
     if spec is None:
-        spec = available.get("magpie") or next(iter(available.values()))
+        return None, ""
     if not model:
         if spec.models:
             model = spec.models[0]
         elif not spec.custom:
-            # opencode 的默认 model 只适用于它自己的 provider
+            # opencode 的默认 model 只适用于它自己的 provider（本地测试路径）
             model = default_model(path)
     return spec, model
 
@@ -186,11 +226,9 @@ def describe(
     path: str | Path | None = None, custom: str | dict | list | None = None
 ) -> dict:
     """给设置接口用：所有 provider 与模型。"""
-    config_path = Path(path).expanduser() if path else next(
-        (p for p in DEFAULT_PATHS if p.exists()), None
-    )
+    config_path = Path(path).expanduser() if path else None
     return {
-        "config_path": str(config_path) if config_path else None,
+        "config_path": str(config_path) if config_path and config_path.exists() else None,
         "default_model": default_model(path),
         "providers": [spec.to_dict() for spec in merged(path, custom).values()],
     }

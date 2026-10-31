@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from ..config import Settings, get_settings
 from ..db.conn import Database
 from ..llm.embedding import EmbeddingProvider
-from ..llm.gateway import ECHO_SENTINEL, EchoProvider, LlmGateway
+from ..llm.gateway import ECHO_SENTINEL, EchoProvider, LlmGateway, query_reason
 from ..retrieve.compiler import citation_payload
 from ..retrieve.retriever import Retriever
 
@@ -132,7 +132,13 @@ class QaService:
                     book_id,
                     provider_name,
                 )
-            answer = self._extractive_answer(question, compiled, error=error, configured=configured)
+            answer = self._extractive_answer(
+                question,
+                compiled,
+                error=error,
+                configured=configured,
+                detail="" if configured else query_reason(self.settings),
+            )
             degraded = "extractive"
         else:
             degraded = ""
@@ -166,7 +172,13 @@ class QaService:
         return progress_seq, spoiler_guard
 
     def _extractive_answer(
-        self, question: str, compiled, *, error: str = "", configured: bool = True
+        self,
+        question: str,
+        compiled,
+        *,
+        error: str = "",
+        configured: bool = True,
+        detail: str = "",
     ) -> str:
         """本地模型不可用时的抽取式兜底：只做引用拼接，绝不生成新内容。
 
@@ -175,7 +187,9 @@ class QaService:
         """
         head = compiled.blocks[:3]
         if not configured:
-            reason = "问答模型未配置：请在「设置」里选择 provider，或配置 NOVEL_RAG_QUERY_* 环境变量"
+            reason = "问答模型未配置：" + (
+                detail or "请在「设置」里选择 provider，或配置 NOVEL_RAG_QUERY_* 环境变量"
+            )
         elif error:
             reason = f"问答模型调用失败：{error}"
         else:

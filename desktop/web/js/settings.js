@@ -12,7 +12,8 @@ export function init(refs) {
   els.embed?.addEventListener('change', () => save({ embedding_backend: els.embed.value }));
   els.llmProvider?.addEventListener('change', () => {
     const provider = (snapshot?.options?.llm?.providers || []).find((p) => p.name === els.llmProvider.value);
-    const model = provider?.models?.[0] || '';
+    // provider 没声明模型列表时用默认 model，否则 llm_model 会被存成空值
+    const model = provider ? providerModel(provider) : '';
     save({ llm_provider: els.llmProvider.value, llm_model: model });
   });
   els.llmModel?.addEventListener('change', () =>
@@ -44,16 +45,18 @@ function fill(data) {
   fillSelect(els.embed, options.embedding_backend, values.embedding_backend);
 
   const providers = options.llm?.providers || [];
+  // 必须带一个空的「未选择」项：否则下拉框会显示第一个 provider，
+  // 看着像已经配好了，实际后端 llm_provider 还是空的（问答一直走原文摘录）。
   fillSelect(
     els.llmProvider,
-    providers.map((p) => ({ id: p.name, label: `${p.label}（${p.base_url}）` })),
+    [
+      { id: '', label: providers.length ? '（未选择，请选择 provider）' : '（无可用项）' },
+      ...providers.map((p) => ({ id: p.name, label: `${p.label}（${p.base_url}）` })),
+    ],
     values.llm_provider
   );
-  const active = providers.find((p) => p.name === values.llm_provider) || providers[0];
-  fillModelOptions(
-    active?.models || [],
-    values.llm_model || active?.models?.[0] || ''
-  );
+  const active = providers.find((p) => p.name === values.llm_provider);
+  fillModelOptions(active?.models || [], values.llm_model || (active ? providerModel(active) : ''));
 
   fillSelect(els.embedEndpoint, options.embedding_endpoint, values.embedding_endpoint || '');
 
@@ -62,10 +65,14 @@ function fill(data) {
 
   if (els.llmConfigPath) {
     const custom = (options.llm?.providers || []).filter((p) => p.custom).length;
-    els.llmConfigPath.textContent = [
-      options.llm?.config_path ? `配置来源：${options.llm.config_path}` : '未找到 opencode 配置',
-      custom ? `另有 ${custom} 个手动添加的 provider` : '',
-    ].filter(Boolean).join(' · ');
+    const parts = [
+      custom
+        ? `已添加 ${custom} 个 provider（保存在本机数据库）`
+        : '还没有添加 provider：在下方「添加 provider」里填写名称 / Base URL / 模型',
+    ];
+    // 只有本地测试显式指定 NOVEL_RAG_OPENCODE_CONFIG 时后端才会返回这个字段
+    if (options.llm?.config_path) parts.push(`本地测试配置：${options.llm.config_path}`);
+    els.llmConfigPath.textContent = parts.join(' · ');
   }
 
   if (els.embedStatus) {
@@ -112,7 +119,10 @@ function fillModelOptions(models, value) {
   const list = document.getElementById('llm-model-options');
   if (list) {
     list.innerHTML = '';
-    for (const model of models || []) {
+    const suggestions = [...(models || [])];
+    // provider 没声明模型列表时，也把当前生效的模型名作为建议
+    if (value && !suggestions.includes(value)) suggestions.unshift(value);
+    for (const model of suggestions) {
       const option = document.createElement('option');
       option.value = model;
       list.appendChild(option);
@@ -120,6 +130,14 @@ function fillModelOptions(models, value) {
   }
   // 用输入框而不是下拉框：provider 没有声明模型列表时也能直接填模型名
   if (els.llmModel) els.llmModel.value = value || '';
+}
+
+// provider 声明了模型就用第一个；没声明时退回本地测试配置里的默认 model，
+// 否则 llm_model 会被存成空值，后端解析不出模型，问答静默降级成原文摘录。
+function providerModel(provider) {
+  if (!provider) return '';
+  if (provider.models?.length) return provider.models[0];
+  return provider.custom ? '' : (snapshot?.options?.llm?.default_model || '');
 }
 
 function fillSelect(select, items, value) {
@@ -203,7 +221,7 @@ async function addProvider() {
     for (const key of ['providerName', 'providerBaseUrl', 'providerApiKey', 'providerModels']) {
       if (els[key]) els[key].value = '';
     }
-    els.providerHint.textContent = '已添加，可在上方选择';
+    els.providerHint.textContent = '已添加' + (result.values?.llm_provider ? '并已选中' : '，请在上方选择');
     await load();
     if (result.values?.llm_provider) els.effective.textContent = JSON.stringify(result.values, null, 2);
   } catch (error) {

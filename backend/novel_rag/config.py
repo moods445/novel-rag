@@ -84,13 +84,14 @@ class Settings:
     # 网络代理：http/https 代理地址，空 = 直连（仍遵循系统 http_proxy / https_proxy）
     network_proxy: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_PROXY", ""))
 
-    # LLM：留空则走具体的 EXTRACT_/QUERY_ 配置；填写则用 opencode 里的 provider
+    # LLM：留空则走具体的 EXTRACT_/QUERY_ 配置；填写则用设置页里选中的 provider
     llm_provider: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LLM_PROVIDER", ""))
     llm_model: str = field(default_factory=lambda: os.environ.get("NOVEL_RAG_LLM_MODEL", ""))
-    # 界面里添加的自定义 provider（JSON 列表），与 opencode 配置合并后供网关使用
+    # 设置页添加的 provider（JSON 列表，存本机数据库）——应用里唯一的常规 provider 来源
     custom_providers: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_CUSTOM_PROVIDERS", "")
     )
+    # 仅本地测试/调试：显式指定 opencode 配置文件；留空 = 不读、不探测任何默认路径
     opencode_config: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_OPENCODE_CONFIG", "")
     )

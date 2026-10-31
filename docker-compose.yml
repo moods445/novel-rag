@@ -23,7 +23,7 @@ services:
       NOVEL_RAG_DISABLE_AUTH: "${NOVEL_RAG_DISABLE_AUTH:-1}"
       NOVEL_RAG_TOKEN: "${NOVEL_RAG_TOKEN:-}"
       NOVEL_RAG_EMBED_BACKEND: "${NOVEL_RAG_EMBED_BACKEND:-auto}"
-      # 模型调用（容器里没有桌面端的 opencode 配置，只能靠环境变量注入）
+      # 模型调用（也可以在设置页「添加 provider」，存容器内 /data 的数据库，效果一样）
       NOVEL_RAG_QUERY_BASE_URL: "${NOVEL_RAG_QUERY_BASE_URL:-}"
       NOVEL_RAG_QUERY_API_KEY: "${NOVEL_RAG_QUERY_API_KEY:-}"
       NOVEL_RAG_QUERY_MODEL: "${NOVEL_RAG_QUERY_MODEL:-}"
