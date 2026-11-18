@@ -89,6 +89,56 @@ class WebStaticTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"ok", body)
 
+    def _request(
+        self, method: str, path: str, *, body: dict | None = None, token: str = "web-token"
+    ) -> tuple[int, dict]:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=payload, headers=headers)
+        res = conn.getresponse()
+        raw = res.read()
+        conn.close()
+        return res.status, json.loads(raw or b"{}")
+
+    def test_provider_crud_routes(self) -> None:
+        """provider 的读/改/删都要有路由，而不是只有列表与新增。"""
+        status, created = self._request(
+            "POST",
+            "/api/providers",
+            body={
+                "name": "my-api",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "sk-abcdef123456",
+                "models": "m1, m2",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(created["values"]["llm_provider"], "my-api")
+
+        status, detail = self._request("GET", "/api/providers/my-api")
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["provider"]["models"], ["m1", "m2"])
+        self.assertNotIn("sk-abcdef123456", json.dumps(detail, ensure_ascii=False))
+
+        status, updated = self._request(
+            "PUT",
+            "/api/providers/my-api",
+            body={"name": "renamed", "models": ["m2", "m3"]},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["values"]["llm_provider"], "renamed")
+        self.assertEqual(updated["values"]["llm_model"], "m2")
+        self.assertEqual(updated["providers"][0]["name"], "renamed")
+
+        status, _payload = self._request("DELETE", "/api/providers/renamed")
+        self.assertEqual(status, 200)
+        status, _payload = self._request("GET", "/api/providers/renamed")
+        self.assertEqual(status, 404)
+
     def test_log_tail_endpoint(self) -> None:
         """日志页依赖这个接口：只返回尾部 N 行，且必须带 token。"""
         log_file = self.settings.log_file

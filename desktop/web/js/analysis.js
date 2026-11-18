@@ -3,7 +3,7 @@ import { api, escapeHtml } from './api.js';
 import { goToCitation } from './reader.js';
 
 const els = {};
-let state = { book: null, progressSeq: 1, spoilerGuard: true, askSeq: 0 };
+let state = { book: null, progressSeq: 1, spoilerGuard: true, askSeq: 0, taskState: '' };
 
 export function init(refs) {
   Object.assign(els, refs);
@@ -23,6 +23,7 @@ export function setBook(book, progressSeq, spoilerGuard) {
   state.book = book;
   state.progressSeq = progressSeq || 1;
   state.spoilerGuard = Boolean(spoilerGuard);
+  state.taskState = '';
   if (els.spoilerGuard) els.spoilerGuard.checked = state.spoilerGuard;
 }
 
@@ -140,38 +141,23 @@ export async function refreshTask() {
     els.taskBar.style.width = `${percent}%`;
     els.taskHint.textContent = `${task.state} · ${coverage.done}/${coverage.total}`;
     els.coverageHint.textContent = `知识库覆盖 ${coverage.done}/${coverage.total}`;
+    // 本轮分析刚跑完（例如配置抽取模型后重抽离线章节）：立刻拉一次时间线，
+    // 否则停在分析页的用户要切走再回来才能看到新事件。
+    if (task.state === 'done' && state.taskState !== 'done') refreshTimeline();
+    state.taskState = task.state;
   } catch {
     /* 忽略 */
   }
 }
 
-export async function refreshGraph() {
+export async function refreshTimeline() {
   if (!state.book) return;
   try {
-    const [graph, timeline] = await Promise.all([
-      api.get(`/api/books/${state.book.id}/graph`),
-      api.get(`/api/books/${state.book.id}/timeline`),
-    ]);
-    renderRelations(graph.relations || []);
+    const timeline = await api.get(`/api/books/${state.book.id}/timeline`);
     renderTimeline(timeline.timeline || []);
   } catch {
     /* 忽略 */
   }
-}
-
-function renderRelations(relations) {
-  if (!relations.length) {
-    els.relations.innerHTML = '<li class="empty">还没有抽取到关系</li>';
-    return;
-  }
-  els.relations.innerHTML = relations
-    .slice(0, 60)
-    .map(
-      (r) =>
-        `<li>${escapeHtml(r.a_name || '?')} <span class="dim">${escapeHtml(r.rel_type || '')}</span> ` +
-        `${escapeHtml(r.b_name || '?')} <span class="dim">seq ${r.valid_from_seq}</span></li>`
-    )
-    .join('');
 }
 
 function renderTimeline(items) {

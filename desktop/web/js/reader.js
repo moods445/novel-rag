@@ -141,7 +141,11 @@ export function toc() {
   const list = [];
   const walk = (items, depth) => {
     for (const item of items || []) {
-      list.push({ label: item.label || item.href, href: item.href, depth });
+      // foliate 的 toc href 是解析后的包内路径（如 OEBPS/ch0001.xhtml），
+      // 与后端的 nav_href（ch0001.xhtml）不是一个字符串；这里统一折算成
+      // spine 序号，选择框只认序号，避免两边 href 对不上导致回填失败。
+      const spine = view?.resolveNavigation?.(item.href)?.index;
+      list.push({ label: item.label || item.href, href: item.href, depth, spine });
       walk(item.subitems, depth + 1);
     }
   };
@@ -149,8 +153,9 @@ export function toc() {
   return list;
 }
 
+/** target 可以是 CFI / 包内 href / spine 序号；序号 0 也合法，不能用真值判断。 */
 export async function goTo(target) {
-  if (!view || !target) return false;
+  if (!view || target == null || target === '') return false;
   try {
     const resolved = view.resolveNavigation(target);
     if (!resolved) return false;
@@ -162,14 +167,14 @@ export async function goTo(target) {
   }
 }
 
-/** 引用跳转：先按 CFI，再退回章节 href。 */
+/** 引用跳转：先按 CFI，再退回章节的 spine 序号。 */
 export async function goToCitation(citation) {
   if (!citation) return false;
   if (citation.cfi && (await goTo(citation.cfi))) return true;
   const chapterNo = citation.chapter_no;
   if (chapterNo) {
     const chapter = chapters.find((c) => c.idx === chapterNo - 1);
-    if (chapter && chapter.nav_href && (await goTo(chapter.nav_href))) return true;
+    if (chapter && (await goTo(chapter.spine_index))) return true;
   }
   return false;
 }
@@ -178,7 +183,7 @@ export async function goToChapter(delta) {
   const current = spineOfCfi(view?.lastLocation?.cfi || '');
   const next = Math.min(Math.max(current + delta, 0), chapters.length - 1);
   const chapter = chapters.find((c) => c.spine_index === next);
-  if (chapter) await goTo(chapter.nav_href);
+  if (chapter) await goTo(chapter.spine_index);
 }
 
 // ---------------------------------------------------------------- 排版与键盘

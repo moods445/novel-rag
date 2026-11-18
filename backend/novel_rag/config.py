@@ -95,6 +95,15 @@ class Settings:
     opencode_config: str = field(
         default_factory=lambda: os.environ.get("NOVEL_RAG_OPENCODE_CONFIG", "")
     )
+    # 章节抽取并发数：LLM 调用占绝大部分耗时，多章同时请求可近似线性提速。
+    # 1 = 完全串行；云端 provider 一般 2–4 合适，本地 Ollama 建议 1。
+    extract_concurrency: int = field(
+        default_factory=lambda: max(1, _env_int("NOVEL_RAG_EXTRACT_CONCURRENCY", 3))
+    )
+    # 单次抽取调用的原文目标长度（字）。分段数向上取整后均分，避免尾段过短。
+    extract_segment_chars: int = field(
+        default_factory=lambda: max(500, _env_int("NOVEL_RAG_EXTRACT_SEGMENT_CHARS", 5000))
+    )
     # 抽取是长 prompt + 长 JSON，必须给足超时；查询要快
     llm_timeout: float = field(default_factory=lambda: float(os.environ.get("NOVEL_RAG_LLM_TIMEOUT", "240")))
     llm_timeout_query: float = field(

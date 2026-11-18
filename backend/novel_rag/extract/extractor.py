@@ -8,6 +8,7 @@ provider 返回哨兵或无法解析的文本时，退回**启发式抽取**并�
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -52,10 +53,10 @@ TEMPLATE = """请从下面这一章小说中抽取结构化事实。
 
 MAX_CHAPTER_CHARS = 12000
 
-# 单次调用的原文长度。超过就分段抽取再合并。
-# 实测（magpie / conatus-free）：6000 字整章一次性抽取必然把 4096 token 全烧在
-# 推理上、content 返回空；1800 字 + 3072 token 则 3/3 段全部成功。
-SEGMENT_CHARS = 1800
+# 单次调用的原文目标长度。超过就分段抽取再合并（可在设置页/环境变量调整）。
+# 分段数按 ceil(总字数 / 目标长度) 向上取整，再把总字数均分到各段，
+# 避免「10001 字按 5000 切」得到 5000 + 5000 + 1 这种十几字的尾段。
+SEGMENT_CHARS = 5000
 SEGMENT_MAX_TOKENS = 3072
 
 
@@ -175,25 +176,43 @@ class ChapterFactExtractor:
 
 
 def split_segments(body: str, limit: int) -> list[str]:
-    """按句子边界切段，保证每段不超过 ``limit`` 字符。"""
-    if len(body) <= limit:
+    """按目标长度均分章节，避免最后一段只剩十几个字。
+
+    设总字数 s、目标长度 n：段数 ``a = ceil(s / n)``，每段目标长度
+    ``b = ceil(s / a)``。按 i·b 的等距位置取切点并尽量吸附到换行，因此
+    s=10001、n=5000 时得到 3334 + 3334 + 3333，而不是 5000 + 5000 + 1。
+    """
+    limit = max(1, int(limit))
+    total = len(body)
+    if total <= limit:
         return [body]
-    segments: list[str] = []
-    buffer: list[str] = []
-    size = 0
-    for line in body.split("\n"):
-        if size + len(line) + 1 > limit and buffer:
-            segments.append("\n".join(buffer))
-            buffer, size = [], 0
-        if len(line) > limit:  # 超长单行硬切
-            for i in range(0, len(line), limit):
-                segments.append(line[i : i + limit])
-            continue
-        buffer.append(line)
-        size += len(line) + 1
-    if buffer:
-        segments.append("\n".join(buffer))
+    count = max(2, math.ceil(total / limit))
+    cuts = _cut_points(body, count, limit)
+    segments = [body[start:end] for start, end in zip(cuts, cuts[1:])]
     return [s for s in segments if s.strip()] or [body]
+
+
+def _cut_points(body: str, count: int, limit: int) -> list[int]:
+    """按均分位置取切点，并尽量吸附到换行，保证恰好 ``count`` 段。"""
+    total = len(body)
+    cuts = [0]
+    for index in range(1, count):
+        ideal = min(total - 1, math.ceil(total * index / count))
+        # 硬约束：单段不超过 limit，切点最远只能到「上一刀 + limit」
+        high = min(total - 1, cuts[-1] + limit)
+        low = cuts[-1] + 1
+        cuts.append(_snap_to_newline(body, ideal, low, high))
+    cuts.append(total)
+    return cuts
+
+
+def _snap_to_newline(body: str, ideal: int, low: int, high: int) -> int:
+    """在 ideal 附近（±200 字）找换行，找不到就在合法区间内硬切。"""
+    for delta in range(201):
+        for pos in (ideal - delta, ideal + delta):
+            if low <= pos <= high and body[pos - 1] == "\n":
+                return pos
+    return min(max(ideal, low), high)
 
 
 def merge_facts(facts: list[ChapterFact], *, chapter_idx: int) -> ChapterFact:

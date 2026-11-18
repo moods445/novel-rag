@@ -44,6 +44,123 @@ from ..store import facts as fact_store
 from ..store import index as index_store
 
 
+_PROVIDER_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+# provider 字段校验上限：给界面和手写 JSON 都兜一层，避免脏数据落库
+_MAX_MODELS = 50
+_MAX_MODEL_LEN = 200
+_MAX_LABEL_LEN = 80
+
+
+def _provider_name(raw: Any) -> str:
+    name = str(raw or "").strip()
+    if not name:
+        raise InvalidInput("provider 名称不能为空")
+    if not _PROVIDER_NAME_RE.fullmatch(name):
+        raise InvalidInput("provider 名称只能包含字母、数字、点、下划线和短横线（≤64 字）")
+    return name
+
+
+def _normalize_base_url(raw: Any) -> str:
+    text = str(raw or "").strip().rstrip("/")
+    if not text:
+        raise InvalidInput("base_url 不能为空")
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise InvalidInput("base_url 需是以 http:// 或 https:// 开头的完整地址")
+    return text
+
+
+def _normalize_models(raw: Any) -> list[str]:
+    """模型名统一成去重列表：兼容逗号分隔字符串、数组与中文逗号。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = re.split(r"[,\n，]", raw)
+    elif isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw]
+    else:
+        raise InvalidInput("models 需要是逗号分隔的字符串或字符串数组")
+
+    models: list[str] = []
+    for item in items:
+        name = str(item).strip()
+        if not name or name in models:
+            continue
+        if len(name) > _MAX_MODEL_LEN:
+            raise InvalidInput(f"模型名过长（≤{_MAX_MODEL_LEN} 字）")
+        models.append(name)
+    if len(models) > _MAX_MODELS:
+        raise InvalidInput(f"模型数量过多（≤{_MAX_MODELS} 个）")
+    return models
+
+
+def _provider_spec(
+    body: dict, name: str, existing: opencode.ProviderSpec | None
+) -> opencode.ProviderSpec:
+    """把请求体合并到既有 provider 上（未传的字段保持原值）。"""
+    if "base_url" in body or "baseURL" in body:
+        base_url = _normalize_base_url(body.get("base_url") or body.get("baseURL"))
+    elif existing is not None:
+        base_url = existing.base_url
+    else:
+        raise InvalidInput("base_url 不能为空")
+
+    if "api_key" in body:
+        api_key = str(body.get("api_key") or "").strip()
+    else:
+        # 编辑时没填 Key = 保持原 Key（界面不会回显明文）
+        api_key = existing.api_key if existing is not None else ""
+
+    if "models" in body:
+        models = _normalize_models(body.get("models"))
+    else:
+        models = list(existing.models) if existing is not None else []
+
+    if "label" in body:
+        label = str(body.get("label") or "").strip() or name
+    elif existing is not None and existing.label and existing.label != existing.name:
+        label = existing.label
+    else:
+        label = name
+    if len(label) > _MAX_LABEL_LEN:
+        raise InvalidInput(f"provider 显示名称过长（≤{_MAX_LABEL_LEN} 字）")
+
+    return opencode.ProviderSpec(
+        name=name,
+        base_url=base_url,
+        api_key=api_key,
+        models=models,
+        label=label,
+        custom=True,
+    )
+
+
+def _custom_changes(specs: dict[str, opencode.ProviderSpec]) -> dict[str, str]:
+    if not specs:
+        return {"custom_providers": ""}
+    return {
+        "custom_providers": json.dumps(
+            [spec.to_storage() for spec in specs.values()], ensure_ascii=False
+        )
+    }
+
+
+def _model_after_models_change(
+    previous: list[str], current: list[str], model: str
+) -> str | None:
+    """模型列表变化后返回应当同步的 llm_model（无需变更时返回 None）。
+
+    只处理「原来指向声明列表里的模型、改完该模型不见了」和「原本为空」两种情况；
+    用户手填的、不在声明列表里的模型名保持不动。
+    """
+    if model and model in previous and model not in current:
+        return current[0] if current else ""
+    if not model and current:
+        return current[0]
+    return None
+
+
 @dataclass
 class App:
     settings: Settings
@@ -510,85 +627,101 @@ class App:
         }
         return payload
 
+    def provider_payload(self, name: str) -> dict:
+        """单个 provider 详情（编辑表单回填用）：api_key 仍只给脱敏提示。"""
+        available = opencode.merged(
+            self.settings.opencode_config, self.settings.custom_providers
+        )
+        spec = available.get(name)
+        if spec is None:
+            raise NotFound(f"provider「{name}」不存在")
+        return {
+            "provider": spec.to_dict(),
+            "values": {
+                "llm_provider": self.settings.llm_provider,
+                "llm_model": self.settings.llm_model,
+            },
+        }
+
     def save_provider(self, body: dict) -> dict:
-        """新增或更新一个界面自定义 provider。"""
-        name = str(body.get("name") or "").strip()
-        base_url = str(body.get("base_url") or body.get("baseURL") or "").strip().rstrip("/")
-        if not name:
-            raise InvalidInput("provider 名称不能为空")
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
-            raise InvalidInput("provider 名称只能包含字母、数字、点、下划线和短横线（≤64 字）")
-        if not base_url.startswith(("http://", "https://")):
-            raise InvalidInput("base_url 需以 http:// 或 https:// 开头")
-
-        models = body.get("models")
-        if isinstance(models, str):
-            models = [m.strip() for m in re.split(r"[,\n]", models)]
-        elif isinstance(models, list):
-            models = [str(m).strip() for m in models]
-        else:
-            models = []
-        models = [m for m in models if m]
-
+        """新增或覆盖一个界面自定义 provider（POST /api/providers）。"""
+        name = _provider_name(body.get("name"))
         current = opencode.parse_custom(self.settings.custom_providers)
         existing = current.get(name)
-        raw_key = body.get("api_key")
-        if raw_key is None and existing is not None:
-            api_key = existing.api_key  # 未传 key 时保留原值
-        else:
-            api_key = str(raw_key or "").strip()
+        spec = _provider_spec(body, name, existing)
+        current[name] = spec
 
-        current[name] = opencode.ProviderSpec(
-            name=name,
-            base_url=base_url,
-            api_key=api_key,
-            models=models,
-            label=str(body.get("label") or name).strip() or name,
-            custom=True,
-        )
-        self._store_custom(current, autoselect=(name, models))
+        changes = _custom_changes(current)
+        if self.settings.llm_provider == name and existing is not None:
+            model = _model_after_models_change(
+                existing.models, spec.models, self.settings.llm_model
+            )
+            if model is not None:
+                changes["llm_model"] = model
+        elif not self.settings.llm_provider:
+            # 还没选中任何 provider 时顺手把新加的选上，避免「加了却没用上」
+            changes["llm_provider"] = name
+            if spec.models:
+                changes["llm_model"] = spec.models[0]
+        self.store.update(changes)
+        self.refresh()
         logging.getLogger("novel_rag.api").info(
-            "provider saved: %s (%s)", name, base_url
+            "provider saved: %s (%s)", name, spec.base_url
+        )
+        return self.providers_payload()
+
+    def update_provider(self, name: str, body: dict) -> dict:
+        """更新指定 provider（PUT /api/providers/{name}）。
+
+        ``body.name`` 与路径不同时视为改名；选中项会跟着改名，模型列表变短时
+        自动落到第一个仍然存在的模型。
+        """
+        current = opencode.parse_custom(self.settings.custom_providers)
+        existing = current.get(name)
+        if existing is None:
+            if name in opencode.providers(self.settings.opencode_config):
+                raise InvalidInput("该 provider 来自本地测试配置，不能在应用内修改")
+            raise NotFound(f"provider「{name}」不存在")
+
+        new_name = _provider_name(body.get("name") or name)
+        if new_name != name and new_name in current:
+            raise InvalidInput(f"provider「{new_name}」已存在")
+        spec = _provider_spec(body, new_name, existing)
+        if new_name != name:
+            del current[name]
+        current[new_name] = spec
+
+        changes = _custom_changes(current)
+        if self.settings.llm_provider == name:
+            changes["llm_provider"] = new_name
+            model = _model_after_models_change(
+                existing.models, spec.models, self.settings.llm_model
+            )
+            if model is not None:
+                changes["llm_model"] = model
+        self.store.update(changes)
+        self.refresh()
+        logging.getLogger("novel_rag.api").info(
+            "provider updated: %s -> %s (%s)", name, new_name, spec.base_url
         )
         return self.providers_payload()
 
     def delete_provider(self, name: str) -> dict:
         current = opencode.parse_custom(self.settings.custom_providers)
         if name not in current:
+            if name in opencode.providers(self.settings.opencode_config):
+                raise InvalidInput("该 provider 来自本地测试配置，不能在应用内删除")
             raise NotFound("provider not found")
         del current[name]
         logging.getLogger("novel_rag.api").info("provider deleted: %s", name)
-        changes: dict[str, str] = {
-            "custom_providers": json.dumps(
-                [spec.to_storage() for spec in current.values()], ensure_ascii=False
-            )
-            if current
-            else ""
-        }
+        changes = _custom_changes(current)
         if self.settings.llm_provider == name:
+            # 删掉正在使用的 provider 后必须清空选中，否则诊断会指向已不存在的项
             changes["llm_provider"] = ""
             changes["llm_model"] = ""
         self.store.update(changes)
         self.refresh()
         return self.providers_payload()
-
-    def _store_custom(self, specs, *, autoselect: tuple[str, list[str]] | None = None) -> None:
-        """落库自定义 provider；还没选中任何 provider 时顺手把新加的选上。
-
-        只在「什么都没选」时自动选，避免覆盖用户已有的选择。
-        """
-        changes: dict[str, str] = {
-            "custom_providers": json.dumps(
-                [spec.to_storage() for spec in specs.values()], ensure_ascii=False
-            )
-        }
-        if autoselect is not None and not self.settings.llm_provider:
-            name, models = autoselect
-            changes["llm_provider"] = name
-            if models:
-                changes["llm_model"] = models[0]
-        self.store.update(changes)
-        self.refresh()
 
     def recover_tasks(self) -> list[str]:
         """进程重启：把残留的 running 状态改成 paused，交给用户或下次启动续跑。"""
@@ -859,14 +992,20 @@ class Handler(BaseHTTPRequestHandler):
         if tail == ["models"]:
             return self.app.store.describe(self.app.settings)["options"]
 
-        # provider：设置页添加（可增删）
+        # provider：设置页添加 / 查看 / 修改 / 删除
         if tail == ["providers"]:
             if method == "GET":
                 return self.app.providers_payload()
             if method == "POST":
                 return self.app.save_provider(self._read_json())
-        if len(tail) == 2 and tail[0] == "providers" and method == "DELETE":
-            return self.app.delete_provider(tail[1])
+        if len(tail) == 2 and tail[0] == "providers":
+            name = unquote(tail[1])
+            if method == "GET":
+                return self.app.provider_payload(name)
+            if method == "PUT":
+                return self.app.update_provider(name, self._read_json())
+            if method == "DELETE":
+                return self.app.delete_provider(name)
 
         if len(tail) >= 3 and tail[:2] == ["models", "embedding"] and tail[2] == "download":
             dest = self.app.settings.resolved_embed_dir
@@ -1084,10 +1223,21 @@ class Handler(BaseHTTPRequestHandler):
             row = db.query_one("SELECT * FROM reading_progress WHERE book_id=?", (book_id,))
             return dict(row) if row else {"progress_seq": 0, "spoiler_guard": 1}
 
+        if rest == ["graph", "rebuild"] and method == "POST":
+            if not self.app.gateway.extract_ready:
+                raise InvalidInput("尚未配置抽取模型：离线模式不会生成任何关系")
+            if self.app.pipeline.status(book_id)["state"] in ("queued", "running"):
+                raise InvalidInput("抽取正在进行中，请先暂停再重建")
+            logging.getLogger("novel_rag.api").info("graph rebuild: book=%s", book_id)
+            state = self.app.pipeline.rebuild(book_id)
+            self.app.start_analysis(book_id)
+            return state
+
         if rest == ["graph"]:
             as_of = _opt_int(_first(query, "as_of_seq"))
             return {
                 "as_of_seq": as_of,
+                "model_ready": self.app.gateway.extract_ready,
                 "relations": fact_store.relation_pairs_at(db, book_id, as_of),
                 "entities": [
                     dict(r)

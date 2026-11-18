@@ -11,6 +11,7 @@ provider 抽象成 ``complete(prompt) -> str``。本地后端零依赖即可运�
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -112,6 +113,13 @@ class LlmGateway:
     extract: LlmProvider = field(default_factory=EchoProvider)
     query: LlmProvider = field(default_factory=EchoProvider)
     usage: dict[str, int] = field(default_factory=dict)
+    # 章节抽取会多线程并发调用，用量累加需要互斥，避免丢计数
+    _usage_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def extract_ready(self) -> bool:
+        """抽取模型是否已配置（离线哨兵模式下不产生关系）。"""
+        return not isinstance(self.extract, EchoProvider)
 
     def complete(
         self,
@@ -122,7 +130,8 @@ class LlmGateway:
         max_tokens: int = 1024,
     ) -> str:
         provider = self.extract if purpose == "extract" else self.query
-        self.usage[provider.name] = self.usage.get(provider.name, 0) + 1
+        with self._usage_lock:
+            self.usage[provider.name] = self.usage.get(provider.name, 0) + 1
         return provider.complete(prompt, system=system, max_tokens=max_tokens)
 
 

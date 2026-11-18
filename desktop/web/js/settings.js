@@ -4,11 +4,16 @@ import { api, escapeHtml } from './api.js';
 const els = {};
 let snapshot = null;
 let poll = null;
+// 正在编辑的 provider 名称；null = 表单处于「新增」状态
+let editingProvider = null;
 
 export function init(refs) {
   Object.assign(els, refs);
   els.ner?.addEventListener('change', () => save({ ner_backend: els.ner.value }));
   els.split?.addEventListener('change', () => save({ split_backend: els.split.value }));
+  els.segment?.addEventListener('change', () =>
+    save({ extract_segment_chars: (els.segment.value || '').trim() })
+  );
   els.embed?.addEventListener('change', () => save({ embedding_backend: els.embed.value }));
   els.llmProvider?.addEventListener('change', () => {
     const provider = (snapshot?.options?.llm?.providers || []).find((p) => p.name === els.llmProvider.value);
@@ -21,13 +26,34 @@ export function init(refs) {
   );
   els.embedEndpoint?.addEventListener('change', () => save({ embedding_endpoint: els.embedEndpoint.value }));
   els.proxySave?.addEventListener('click', saveProxy);
-  els.providerAdd?.addEventListener('click', addProvider);
+  els.providerAdd?.addEventListener('click', submitProvider);
+  els.providerCancel?.addEventListener('click', () => resetProviderForm());
   els.providerList?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-provider]');
-    if (button) removeProvider(button.dataset.provider);
+    const edit = event.target.closest('[data-provider-edit]');
+    if (edit) {
+      startEditProvider(edit.dataset.providerEdit);
+      return;
+    }
+    const remove = event.target.closest('[data-provider-remove]');
+    if (remove) removeProvider(remove.dataset.providerRemove);
   });
   els.download?.addEventListener('click', startDownload);
   els.resplit?.addEventListener('click', resplitCurrentBook);
+  bindTabs();
+}
+
+// 左侧子功能导航：只切换面板显隐，表单控件与 id 都保持不变
+function bindTabs() {
+  const tabs = [...document.querySelectorAll('#settings-tabs [data-settings-tab]')];
+  const panels = [...document.querySelectorAll('.settings-panel[data-settings-panel]')];
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      tabs.forEach((item) => item.classList.toggle('active', item === tab));
+      panels.forEach((panel) =>
+        panel.classList.toggle('active', panel.dataset.settingsPanel === tab.dataset.settingsTab)
+      );
+    });
+  }
 }
 
 export async function load() {
@@ -43,6 +69,12 @@ function fill(data) {
   fillSelect(els.ner, options.ner_backend, values.ner_backend);
   fillSelect(els.split, options.split_backend, values.split_backend);
   fillSelect(els.embed, options.embedding_backend, values.embedding_backend);
+
+  if (els.segment) {
+    // 留空 = 用默认值；placeholder 显示当前生效的默认（可能被环境变量改过）
+    els.segment.value = (data.overrides || {}).extract_segment_chars || '';
+    els.segment.placeholder = `默认 ${values.extract_segment_chars || 5000} 字（留空恢复默认）`;
+  }
 
   const providers = options.llm?.providers || [];
   // 必须带一个空的「未选择」项：否则下拉框会显示第一个 provider，
@@ -191,52 +223,154 @@ function renderProviders(providers) {
   }
   for (const provider of custom) {
     const item = document.createElement('li');
-    const detail = `${provider.base_url}${provider.has_key ? ' · 已配置 Key' : ' · 无 Key'}`;
-    item.innerHTML = `<span>${escapeHtml(provider.label || provider.name)}</span> ` +
-      `<span class="dim">${escapeHtml(detail)}</span> `;
-    const button = document.createElement('button');
-    button.className = 'btn';
-    button.textContent = '删除';
-    button.dataset.provider = provider.name;
-    item.appendChild(button);
+    item.className = 'provider-item';
+
+    const head = document.createElement('div');
+    head.className = 'provider-item-head';
+    const title = document.createElement('strong');
+    // label 与 name 不同才把两个都显示出来，避免重复
+    title.textContent =
+      provider.label && provider.label !== provider.name
+        ? `${provider.label}（${provider.name}）`
+        : provider.name;
+    const actions = document.createElement('span');
+    actions.className = 'provider-item-actions';
+    actions.appendChild(providerButton('编辑', 'providerEdit', provider.name));
+    actions.appendChild(providerButton('删除', 'providerRemove', provider.name));
+    head.append(title, actions);
+
+    const models = provider.models || [];
+    const key = provider.has_key ? `Key ${provider.api_key_hint || '已配置'}` : '无 Key';
+    const meta = document.createElement('span');
+    meta.className = 'provider-item-meta';
+    meta.textContent = `${provider.base_url} · ${key} · ${models.length} 个模型`;
+
+    item.append(head, meta);
+    if (models.length) {
+      const modelLine = document.createElement('span');
+      modelLine.className = 'provider-item-models';
+      modelLine.textContent = models.join('、');
+      item.appendChild(modelLine);
+    }
     els.providerList.appendChild(item);
   }
 }
 
-async function addProvider() {
+function providerButton(label, datasetKey, name) {
+  const button = document.createElement('button');
+  button.className = 'btn';
+  button.textContent = label;
+  button.dataset[datasetKey] = name;
+  return button;
+}
+
+function startEditProvider(name) {
+  const provider = (snapshot?.options?.llm?.providers || []).find(
+    (p) => p.name === name && p.custom
+  );
+  if (!provider) return;
+  editingProvider = provider.name;
+  if (els.providerName) els.providerName.value = provider.name;
+  if (els.providerLabel) {
+    // 显示名称与名称相同视为未设置，留空让后端继续按名称兜底
+    els.providerLabel.value =
+      provider.label && provider.label !== provider.name ? provider.label : '';
+  }
+  if (els.providerBaseUrl) els.providerBaseUrl.value = provider.base_url || '';
+  if (els.providerModels) els.providerModels.value = (provider.models || []).join(', ');
+  if (els.providerApiKey) {
+    els.providerApiKey.value = '';
+    els.providerApiKey.placeholder = provider.has_key
+      ? `留空 = 保持现有 Key（${provider.api_key_hint || '已配置'}）`
+      : 'API Key（可选）';
+  }
+  if (els.providerClearKey) els.providerClearKey.checked = false;
+  if (els.providerKeyClearWrap) els.providerKeyClearWrap.hidden = !provider.has_key;
+  if (els.providerFormTitle) {
+    els.providerFormTitle.textContent = `编辑 provider：${provider.name}`;
+  }
+  if (els.providerAdd) els.providerAdd.textContent = '保存修改';
+  if (els.providerCancel) els.providerCancel.hidden = false;
+  if (els.providerHint) {
+    els.providerHint.textContent = '名称可改（会同步更新选中项）；Key 留空表示不修改';
+  }
+  els.providerFormTitle?.scrollIntoView?.({ block: 'center' });
+}
+
+function resetProviderForm({ silent = false } = {}) {
+  editingProvider = null;
+  for (const key of [
+    'providerName',
+    'providerLabel',
+    'providerBaseUrl',
+    'providerApiKey',
+    'providerModels',
+  ]) {
+    if (els[key]) els[key].value = '';
+  }
+  if (els.providerApiKey) els.providerApiKey.placeholder = 'API Key（可选）';
+  if (els.providerClearKey) els.providerClearKey.checked = false;
+  if (els.providerKeyClearWrap) els.providerKeyClearWrap.hidden = true;
+  if (els.providerFormTitle) els.providerFormTitle.textContent = '添加 provider';
+  if (els.providerAdd) els.providerAdd.textContent = '添加';
+  if (els.providerCancel) els.providerCancel.hidden = true;
+  if (!silent && els.providerHint) els.providerHint.textContent = '';
+}
+
+async function submitProvider() {
   const name = (els.providerName?.value || '').trim();
   const baseUrl = (els.providerBaseUrl?.value || '').trim();
   if (!name || !baseUrl) {
-    els.providerHint.textContent = '名称和 Base URL 必填';
+    if (els.providerHint) els.providerHint.textContent = '名称和 Base URL 必填';
     return;
   }
-  els.providerHint.textContent = '保存中…';
+  const wasEditing = editingProvider;
+  const body = {
+    name,
+    label: (els.providerLabel?.value || '').trim(),
+    base_url: baseUrl,
+    models: (els.providerModels?.value || '').trim(),
+  };
+  // 新增：key 空就是没配；编辑：不填 = 保持原值，只有勾选「清除」才显式置空
+  const typedKey = (els.providerApiKey?.value || '').trim();
+  if (typedKey) {
+    body.api_key = typedKey;
+  } else if (!wasEditing || els.providerClearKey?.checked) {
+    body.api_key = '';
+  }
+
+  if (els.providerAdd) els.providerAdd.disabled = true;
+  if (els.providerHint) els.providerHint.textContent = '保存中…';
   try {
-    const result = await api.post('/api/providers', {
-      name,
-      base_url: baseUrl,
-      api_key: (els.providerApiKey?.value || '').trim(),
-      models: (els.providerModels?.value || '').trim(),
-    });
-    for (const key of ['providerName', 'providerBaseUrl', 'providerApiKey', 'providerModels']) {
-      if (els[key]) els[key].value = '';
+    const result = wasEditing
+      ? await api.put(`/api/providers/${encodeURIComponent(wasEditing)}`, body)
+      : await api.post('/api/providers', body);
+    resetProviderForm({ silent: true });
+    if (els.providerHint) {
+      els.providerHint.textContent = wasEditing
+        ? `已更新 ${name}`
+        : '已添加' + (result.values?.llm_provider === name ? '并已选中' : '，请在上方选择');
     }
-    els.providerHint.textContent = '已添加' + (result.values?.llm_provider ? '并已选中' : '，请在上方选择');
     await load();
-    if (result.values?.llm_provider) els.effective.textContent = JSON.stringify(result.values, null, 2);
+    if (els.effective && result.values) {
+      els.effective.textContent = JSON.stringify(result.values, null, 2);
+    }
   } catch (error) {
-    els.providerHint.textContent = `失败：${error.message}`;
+    if (els.providerHint) els.providerHint.textContent = `保存失败：${error.message}`;
+  } finally {
+    if (els.providerAdd) els.providerAdd.disabled = false;
   }
 }
 
 async function removeProvider(name) {
-  if (!window.confirm(`删除 provider「${name}」？`)) return;
+  if (!window.confirm(`删除 provider「${name}」？删除后需要重新选择问答模型。`)) return;
   try {
     await api.del(`/api/providers/${encodeURIComponent(name)}`);
-    els.providerHint.textContent = `已删除 ${name}`;
+    if (editingProvider === name) resetProviderForm({ silent: true });
+    if (els.providerHint) els.providerHint.textContent = `已删除 ${name}`;
     await load();
   } catch (error) {
-    els.providerHint.textContent = `删除失败：${error.message}`;
+    if (els.providerHint) els.providerHint.textContent = `删除失败：${error.message}`;
   }
 }
 

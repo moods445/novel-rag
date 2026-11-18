@@ -25,6 +25,7 @@
           <button class="nav-item active" data-view="shelf">书架</button>
           <button class="nav-item" data-view="read">阅读</button>
           <button class="nav-item" data-view="analysis">分析</button>
+          <button class="nav-item" data-view="graph">图谱</button>
           <button class="nav-item" data-view="vectors">向量</button>
           <button class="nav-item" data-view="logs">日志</button>
           <button class="nav-item" data-view="settings">设置</button>
@@ -161,11 +162,88 @@
               </div>
               <div class="progress"><div id="task-bar"></div></div>
 
-              <div class="panel-head" style="margin-top: 18px"><span>关系</span></div>
-              <ul id="relations" class="list"></ul>
-
-              <div class="panel-head" style="margin-top: 14px"><span>时间线</span></div>
+              <div class="panel-head" style="margin-top: 18px"><span>时间线</span></div>
               <ul id="timeline" class="list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- 关系图 -->
+        <section class="view" id="view-graph">
+          <header class="view-head">
+            <h1>关系图</h1>
+            <div class="actions">
+              <select id="graph-book" class="select" title="选择书"></select>
+              <button class="btn" id="btn-graph-refresh">刷新</button>
+              <button class="btn primary" id="btn-graph-start">开始抽取</button>
+              <button class="btn" id="btn-graph-pause">暂停</button>
+              <button class="btn" id="btn-graph-resume">继续</button>
+              <button class="btn" id="btn-graph-rebuild">重建</button>
+            </div>
+          </header>
+
+          <div class="graph-grid">
+            <aside class="graph-sidebar">
+              <div class="panel">
+                <div class="panel-head">
+                  <span>抽取任务</span>
+                  <span class="hint" id="graph-state"></span>
+                </div>
+                <div class="progress"><div id="graph-bar"></div></div>
+                <div class="vector-stats" id="graph-stats"></div>
+                <p class="hint" id="graph-hint"></p>
+              </div>
+
+              <div class="panel graph-setup">
+                <div class="panel-head">
+                  <span>云图设置</span>
+                </div>
+                <div class="graph-config">
+                  <label class="graph-field">
+                    <span>最多人物</span>
+                    <input id="graph-max" class="input" type="number" min="3" max="200" step="1" />
+                  </label>
+                  <label class="toggle graph-toggle">
+                    <input type="checkbox" id="graph-isolated" />
+                    <span>
+                      <strong>显示孤立人物</strong>
+                      <small>与根人物不连通的人物，默认隐藏</small>
+                    </span>
+                  </label>
+                </div>
+                <div class="panel-head graph-subhead">
+                  <span>根人物</span>
+                  <span class="hint">必展示</span>
+                </div>
+                <div class="root-picker">
+                  <div class="root-chips" id="graph-root-chips"></div>
+                  <input
+                    id="graph-root-search"
+                    class="input root-search"
+                    type="search"
+                    placeholder="搜索人物…"
+                    autocomplete="off"
+                  />
+                  <div class="root-list" id="graph-root-list" role="listbox" aria-multiselectable="true"></div>
+                </div>
+                <p class="hint graph-tip">点名字即可设为根人物（可多选），再点一次取消</p>
+              </div>
+            </aside>
+
+            <div class="panel graph-network">
+              <div class="panel-head">
+                <span>关系网络</span>
+                <div class="graph-head-right">
+                  <span class="hint graph-legend" id="graph-legend"></span>
+                  <button class="btn btn-mini" id="graph-drill-reset" hidden>收起下探</button>
+                </div>
+              </div>
+              <div class="graph-canvas" id="graph-canvas">
+                <span class="hint">还没有抽取到关系</span>
+              </div>
+              <p class="hint graph-detail" id="graph-detail">
+                云图：节点可自由拖拽，空白处拖动平移画布、滚轮缩放；点击节点或连线查看明细；点气泡右下角「＋」展开该人物的关系人。
+              </p>
             </div>
           </div>
         </section>
@@ -247,89 +325,125 @@
             </div>
           </header>
 
-          <div class="settings-grid">
-            <div class="panel">
-              <div class="panel-head"><span>人名识别</span></div>
-              <select id="set-ner" class="select wide"></select>
-              <p class="hint">
-                jieba 走本地词性标注（CPU、约 5MB 词典），配合「姓X名Y字Z」规则能得到别名对；
-                正则模式零依赖但召回较低。
-              </p>
+          <div class="settings-layout">
+            <nav class="settings-tabs" id="settings-tabs" aria-label="设置子功能">
+              <button class="settings-tab active" data-settings-tab="identify">识别模型</button>
+              <button class="settings-tab" data-settings-tab="embedding">语义检索</button>
+              <button class="settings-tab" data-settings-tab="llm">推理模型</button>
+              <button class="settings-tab" data-settings-tab="network">网络代理</button>
+              <button class="settings-tab" data-settings-tab="resplit">章节校正</button>
+            </nav>
 
-              <div class="panel-head" style="margin-top: 18px"><span>章节识别</span></div>
-              <select id="set-split" class="select wide"></select>
-              <p class="hint">规则优先，置信度不足时才调 LLM；也可以强制总是用 LLM。</p>
+            <div class="settings-body">
+              <div class="panel settings-panel active" data-settings-panel="identify">
+                <div class="panel-head"><span>人名识别</span></div>
+                <select id="set-ner" class="select wide"></select>
+                <p class="hint">
+                  jieba 走本地词性标注（CPU、约 5MB 词典），配合「姓X名Y字Z」规则能得到别名对；
+                  正则模式零依赖但召回较低。
+                </p>
 
-              <div class="panel-head" style="margin-top: 18px"><span>语义检索（embedding）</span></div>
-              <select id="set-embed" class="select wide"></select>
-              <div class="model-row">
-                <span id="embed-status" class="hint"></span>
-                <button class="btn" id="btn-embed-download">下载模型</button>
+                <div class="panel-head" style="margin-top: 18px"><span>章节识别</span></div>
+                <select id="set-split" class="select wide"></select>
+                <p class="hint">规则优先，置信度不足时才调 LLM；也可以强制总是用 LLM。</p>
+
+                <div class="panel-head" style="margin-top: 18px"><span>抽取分段</span></div>
+                <input
+                  id="set-segment-chars"
+                  class="input wide"
+                  type="number"
+                  min="500"
+                  max="12000"
+                  step="100"
+                  placeholder="默认 5000 字（留空恢复默认）"
+                />
+                <p class="hint">
+                  每次 LLM 抽取的原文目标长度。分段数按 ceil(总字数 / 该值) 向上取整，
+                  再把总字数均分到各段，避免最后一段只剩十几个字。
+                </p>
               </div>
-              <div class="progress"><div id="embed-bar"></div></div>
 
-              <div class="panel-head" style="margin-top: 18px"><span>模型下载源</span></div>
-              <select id="set-embed-endpoint" class="select wide"></select>
-              <p class="hint">默认自动：先直连 HuggingFace，失败后自动切换国内镜像；也可固定某一源。</p>
-            </div>
+              <div class="panel settings-panel" data-settings-panel="embedding">
+                <div class="panel-head"><span>语义检索（embedding）</span></div>
+                <select id="set-embed" class="select wide"></select>
+                <div class="model-row">
+                  <span id="embed-status" class="hint"></span>
+                  <button class="btn" id="btn-embed-download">下载模型</button>
+                </div>
+                <div class="progress"><div id="embed-bar"></div></div>
 
-            <div class="panel">
-              <div class="panel-head"><span>推理模型</span></div>
-              <p class="hint" id="llm-config-path"></p>
-              <select id="set-llm-provider" class="select wide"></select>
-              <input
-                id="set-llm-model"
-                class="input wide"
-                list="llm-model-options"
-                style="margin-top: 8px"
-                placeholder="模型名（可直接输入，也可从下拉建议里选）"
-              />
-              <datalist id="llm-model-options"></datalist>
-              <p class="hint" id="llm-effective"></p>
-              <p class="hint">
-                provider 只有「设置页添加」这一个来源（保存在本机数据库），抽取与查询共用同一个模型；
-                也可以用环境变量 <code>NOVEL_RAG_QUERY_*</code> 直接指定。未配置时退回离线模式：
-                抽取用启发式、问答用原文摘录。
-              </p>
-
-              <div class="panel-head" style="margin-top: 18px"><span>添加 provider</span></div>
-              <input id="provider-name" class="input wide" placeholder="名称（唯一，如 my-provider）" />
-              <input id="provider-base-url" class="input wide" placeholder="Base URL（如 https://api.example.com/v1）" />
-              <input id="provider-api-key" type="password" class="input wide" placeholder="API Key（可选）" />
-              <input id="provider-models" class="input wide" placeholder="模型名，逗号分隔（如 gpt-4o-mini，至少填一个）" />
-              <div class="model-row">
-                <span id="provider-hint" class="hint"></span>
-                <button class="btn" id="btn-provider-add">添加</button>
+                <div class="panel-head" style="margin-top: 18px"><span>模型下载源</span></div>
+                <select id="set-embed-endpoint" class="select wide"></select>
+                <p class="hint">默认自动：先直连 HuggingFace，失败后自动切换国内镜像；也可固定某一源。</p>
               </div>
-              <ul id="provider-list" class="list" style="margin-top: 8px"></ul>
 
-              <div class="panel-head" style="margin-top: 18px"><span>当前生效</span></div>
-              <pre id="effective" class="code"></pre>
-            </div>
+              <div class="panel settings-panel" data-settings-panel="llm">
+                <div class="panel-head"><span>推理模型</span></div>
+                <p class="hint" id="llm-config-path"></p>
+                <select id="set-llm-provider" class="select wide"></select>
+                <input
+                  id="set-llm-model"
+                  class="input wide"
+                  list="llm-model-options"
+                  style="margin-top: 8px"
+                  placeholder="模型名（可直接输入，也可从下拉建议里选）"
+                />
+                <datalist id="llm-model-options"></datalist>
+                <p class="hint" id="llm-effective"></p>
+                <p class="hint">
+                  provider 只有「设置页添加」这一个来源（保存在本机数据库），抽取与查询共用同一个模型；
+                  也可以用环境变量 <code>NOVEL_RAG_QUERY_*</code> 直接指定。未配置时退回离线模式：
+                  抽取用启发式、问答用原文摘录。
+                </p>
 
-            <div class="panel">
-              <div class="panel-head"><span>网络代理</span></div>
-              <p class="hint">
-                模型下载与 LLM 请求都会走这里配置的代理；留空则直连。
-                （仍会读取系统的 <code>http_proxy</code> / <code>https_proxy</code> 环境变量）
-              </p>
-              <input id="set-proxy" class="input wide" placeholder="http://127.0.0.1:7890（留空 = 直连）" />
-              <div class="model-row">
-                <span id="proxy-hint" class="hint"></span>
-                <button class="btn" id="btn-proxy-save">保存</button>
+                <div class="panel-head" style="margin-top: 18px">
+                  <span id="provider-form-title">添加 provider</span>
+                </div>
+                <input id="provider-name" class="input wide" placeholder="名称（唯一，如 my-provider）" />
+                <input id="provider-label" class="input wide" placeholder="显示名称（可选，默认同名称）" />
+                <input id="provider-base-url" class="input wide" placeholder="Base URL（如 https://api.example.com/v1）" />
+                <input id="provider-api-key" type="password" class="input wide" placeholder="API Key（可选）" />
+                <label id="provider-key-clear-wrap" class="hint" hidden style="margin-top: 6px">
+                  <input id="provider-clear-key" type="checkbox" /> 清除已保存的 API Key
+                </label>
+                <input id="provider-models" class="input wide" placeholder="模型名，逗号分隔（如 gpt-4o-mini，至少填一个）" />
+                <div class="model-row">
+                  <span id="provider-hint" class="hint"></span>
+                  <span class="actions">
+                    <button class="btn" id="btn-provider-cancel" hidden>取消</button>
+                    <button class="btn primary" id="btn-provider-add">添加</button>
+                  </span>
+                </div>
+                <ul id="provider-list" class="list" style="margin-top: 8px"></ul>
+
+                <div class="panel-head" style="margin-top: 18px"><span>当前生效</span></div>
+                <pre id="effective" class="code"></pre>
               </div>
-            </div>
 
-            <div class="panel">
-              <div class="panel-head"><span>章节校正</span></div>
-              <p class="hint">
-                识别错了章节边界时，用正则重新分章（例如 <code>^第[一二三四五六七八九十百]+回.*$</code>）。
-                重分会作废该书已有的知识库，并在返回里列出失效条目。
-              </p>
-              <input id="resplit-pattern" class="input wide" placeholder="正则（留空则用内置规则重试）" />
-              <div class="model-row">
-                <span id="resplit-hint" class="hint"></span>
-                <button class="btn" id="btn-resplit">重新分章</button>
+              <div class="panel settings-panel" data-settings-panel="network">
+                <div class="panel-head"><span>网络代理</span></div>
+                <p class="hint">
+                  模型下载与 LLM 请求都会走这里配置的代理；留空则直连。
+                  （仍会读取系统的 <code>http_proxy</code> / <code>https_proxy</code> 环境变量）
+                </p>
+                <input id="set-proxy" class="input wide" placeholder="http://127.0.0.1:7890（留空 = 直连）" />
+                <div class="model-row">
+                  <span id="proxy-hint" class="hint"></span>
+                  <button class="btn" id="btn-proxy-save">保存</button>
+                </div>
+              </div>
+
+              <div class="panel settings-panel" data-settings-panel="resplit">
+                <div class="panel-head"><span>章节校正</span></div>
+                <p class="hint">
+                  识别错了章节边界时，用正则重新分章（例如 <code>^第[一二三四五六七八九十百]+回.*$</code>）。
+                  重分会作废该书已有的知识库，并在返回里列出失效条目。
+                </p>
+                <input id="resplit-pattern" class="input wide" placeholder="正则（留空则用内置规则重试）" />
+                <div class="model-row">
+                  <span id="resplit-hint" class="hint"></span>
+                  <button class="btn" id="btn-resplit">重新分章</button>
+                </div>
               </div>
             </div>
           </div>

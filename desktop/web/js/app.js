@@ -2,6 +2,7 @@
 import { api, base64FromArrayBuffer, escapeHtml, setBackend } from './api.js';
 import * as analysis from './analysis.js';
 import * as chat from './chat.js';
+import * as graph from './graph.js';
 import * as logs from './logs.js';
 import * as settings from './settings.js';
 import * as vectors from './vectors.js';
@@ -41,7 +42,6 @@ const els = {
   taskBar: $('task-bar'),
   btnStart: $('btn-start'),
   btnPause: $('btn-pause'),
-  relations: $('relations'),
   timeline: $('timeline'),
   spoilerGuard: $('spoiler-guard'),
   // settings
@@ -53,6 +53,7 @@ const els = {
   embedEndpoint: $('set-embed-endpoint'),
   download: $('btn-embed-download'),
   llmProvider: $('set-llm-provider'),
+  segment: $('set-segment-chars'),
   llmModel: $('set-llm-model'),
   llmEffective: $('llm-effective'),
   llmConfigPath: $('llm-config-path'),
@@ -60,16 +61,41 @@ const els = {
   proxyHint: $('proxy-hint'),
   proxySave: $('btn-proxy-save'),
   providerName: $('provider-name'),
+  providerLabel: $('provider-label'),
   providerBaseUrl: $('provider-base-url'),
   providerApiKey: $('provider-api-key'),
+  providerClearKey: $('provider-clear-key'),
+  providerKeyClearWrap: $('provider-key-clear-wrap'),
   providerModels: $('provider-models'),
   providerHint: $('provider-hint'),
+  providerFormTitle: $('provider-form-title'),
   providerAdd: $('btn-provider-add'),
+  providerCancel: $('btn-provider-cancel'),
   providerList: $('provider-list'),
   effective: $('effective'),
   resplitPattern: $('resplit-pattern'),
   resplitHint: $('resplit-hint'),
   resplit: $('btn-resplit'),
+  // graph
+  graphBook: $('graph-book'),
+  graphRefresh: $('btn-graph-refresh'),
+  graphStart: $('btn-graph-start'),
+  graphPause: $('btn-graph-pause'),
+  graphResume: $('btn-graph-resume'),
+  graphRebuild: $('btn-graph-rebuild'),
+  graphState: $('graph-state'),
+  graphBar: $('graph-bar'),
+  graphStats: $('graph-stats'),
+  graphHint: $('graph-hint'),
+  graphLegend: $('graph-legend'),
+  graphDetail: $('graph-detail'),
+  graphCanvas: $('graph-canvas'),
+  graphMax: $('graph-max'),
+  graphIsolated: $('graph-isolated'),
+  graphRootSearch: $('graph-root-search'),
+  graphRootList: $('graph-root-list'),
+  graphRootChips: $('graph-root-chips'),
+  graphDrillReset: $('graph-drill-reset'),
   // vectors
   vectorBook: $('vector-book'),
   vectorRefresh: $('btn-vector-refresh'),
@@ -338,7 +364,6 @@ async function boot() {
     taskBar: els.taskBar,
     btnStart: els.btnStart,
     btnPause: els.btnPause,
-    relations: els.relations,
     timeline: els.timeline,
     spoilerGuard: els.spoilerGuard,
     onSpoilerChange: handleSpoilerChange,
@@ -353,6 +378,7 @@ async function boot() {
   settings.init({
     ner: els.ner,
     split: els.split,
+    segment: els.segment,
     embed: els.embed,
     embedStatus: els.embedStatus,
     embedBar: els.embedBar,
@@ -366,17 +392,43 @@ async function boot() {
     proxyHint: els.proxyHint,
     proxySave: els.proxySave,
     providerName: els.providerName,
+    providerLabel: els.providerLabel,
     providerBaseUrl: els.providerBaseUrl,
     providerApiKey: els.providerApiKey,
+    providerClearKey: els.providerClearKey,
+    providerKeyClearWrap: els.providerKeyClearWrap,
     providerModels: els.providerModels,
     providerHint: els.providerHint,
+    providerFormTitle: els.providerFormTitle,
     providerAdd: els.providerAdd,
+    providerCancel: els.providerCancel,
     providerList: els.providerList,
     effective: els.effective,
     resplitPattern: els.resplitPattern,
     resplitHint: els.resplitHint,
     resplit: els.resplit,
     getBookId: () => (state.book ? state.book.id : null),
+  });
+  graph.init({
+    bookSelect: els.graphBook,
+    refreshBtn: els.graphRefresh,
+    startBtn: els.graphStart,
+    pauseBtn: els.graphPause,
+    resumeBtn: els.graphResume,
+    rebuildBtn: els.graphRebuild,
+    state: els.graphState,
+    bar: els.graphBar,
+    stats: els.graphStats,
+    hint: els.graphHint,
+    legend: els.graphLegend,
+    detail: els.graphDetail,
+    canvas: els.graphCanvas,
+    maxInput: els.graphMax,
+    isolatedToggle: els.graphIsolated,
+    rootSearch: els.graphRootSearch,
+    rootList: els.graphRootList,
+    rootChips: els.graphRootChips,
+    drillReset: els.graphDrillReset,
   });
   vectors.init({
     bookSelect: els.vectorBook,
@@ -469,8 +521,9 @@ function showView(name) {
   });
   if (name === 'analysis') {
     analysis.refreshTask();
-    analysis.refreshGraph();
+    analysis.refreshTimeline();
   }
+  graph.setVisible(name === 'graph');
   vectors.setVisible(name === 'vectors');
   logs.setVisible(name === 'logs');
 }
@@ -582,12 +635,14 @@ async function loadBooks() {
   els.bookList.innerHTML = '';
   if (!state.books.length) {
     els.bookList.innerHTML = '<div class="empty">还没有书，点右上角「导入小说」。</div>';
+    graph.setBooks(state.books);
     vectors.setBooks(state.books, state.book?.id);
     return;
   }
   for (const book of state.books) {
     els.bookList.appendChild(bookCard(book));
   }
+  graph.setBooks(state.books);
   vectors.setBooks(state.books, state.book?.id);
   await refreshShelf();
 }
@@ -649,6 +704,7 @@ async function selectBook(book) {
     chat.setBook(book);
     chat.setProgress(state.progressSeq);
     chat.setSpoilerGuard(progress.spoiler_guard !== 0);
+    graph.setBooks(state.books);
     vectors.setBooks(state.books, book.id);
     await openReader(book, progress);
     fillToc();
@@ -683,7 +739,14 @@ async function openReader(book, progress) {
         analysis.setProgress(chapter.seq_end);
         chat.setProgress(chapter.seq_end);
         els.readerProgress.textContent = `第${chapter.idx + 1}章 · seq ${chapter.seq_end}`;
-        if (els.tocSelect) els.tocSelect.value = chapter.nav_href || '';
+        // 选择框按 spine 序号对齐：foliate toc 的 href 与后端 nav_href 不是同一个
+        // 字符串，直接回填 nav_href 会匹配不到选项，选择框就会显示成空。
+        if (els.tocSelect) {
+          const value = String(chapter.spine_index);
+          if ([...els.tocSelect.options].some((option) => option.value === value)) {
+            els.tocSelect.value = value;
+          }
+        }
       }
     },
   });
@@ -693,12 +756,15 @@ function fillToc() {
   if (!els.tocSelect) return;
   els.tocSelect.innerHTML = '';
   const items = state.reader ? state.reader.toc() : [];
-  const source = items.length
-    ? items
-    : state.chapters.map((c) => ({ label: c.title, href: c.nav_href, depth: 0 }));
+  const resolved = items.filter((item) => Number.isInteger(item.spine));
+  // 选项值统一用 spine 序号：foliate 解析后的 href（OEBPS/ch0001.xhtml）
+  // 与后端 nav_href（ch0001.xhtml）对不上，用序号才能稳定回填。
+  const source = resolved.length
+    ? resolved
+    : state.chapters.map((c) => ({ label: c.title, spine: c.spine_index, depth: 0 }));
   for (const item of source) {
     const option = document.createElement('option');
-    option.value = item.href;
+    option.value = String(item.spine);
     option.textContent = `${'　'.repeat(Math.min(item.depth || 0, 2))}${item.label}`;
     els.tocSelect.appendChild(option);
   }
@@ -706,7 +772,7 @@ function fillToc() {
 
 function bindReaderToolbar() {
   els.tocSelect.addEventListener('change', () => {
-    if (state.reader) state.reader.goTo(els.tocSelect.value);
+    if (state.reader) state.reader.goTo(Number(els.tocSelect.value));
   });
   $('btn-prev').addEventListener('click', () => state.reader && state.reader.goToChapter(-1));
   $('btn-next').addEventListener('click', () => state.reader && state.reader.goToChapter(1));

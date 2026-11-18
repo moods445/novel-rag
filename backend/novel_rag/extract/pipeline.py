@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -16,7 +19,7 @@ from ..db.conn import Database
 from ..domain.models import Chapter, ChapterFact, Paragraph
 from ..ingest.seq_indexer import index_chapters, paragraphs_of_chapter  # noqa: F401
 from ..llm.embedding import EmbeddingProvider
-from ..llm.gateway import LlmGateway
+from ..llm.gateway import EchoProvider, LlmGateway
 from ..store import facts as fact_store
 from ..store import index as index_store
 from .context_builder import build_extraction_context, chapter_start_seq
@@ -87,16 +90,67 @@ class Pipeline:
         }
 
     def start(self, book_id: str) -> dict:
+        # 幂等：已经在抽取中时重复点击直接返回现状，不重置游标、不重开线程。
+        # 「queued」是导入/重分章后的待启动状态，仍需由 start 推进为 running。
+        current = self.status(book_id)
+        if current["state"] == "running":
+            return current
         total = int(
             self.db.query_one("SELECT COUNT(*) AS c FROM chapters WHERE book_id=?", (book_id,))["c"]
         )
+        # 离线跑出来的章节没有关系（决策 #21 不伪造关系）。配置抽取模型后再点
+        # 「开始/继续」时，这些章节必须重抽，否则游标已到末尾、事实也命中缓存，
+        # 永远停留在折线图空着的状态。
+        stale = self._stale_heuristic_chapters(book_id)
+        if stale:
+            self._reset_chapters(book_id, stale)
         self.db.execute(
             "INSERT INTO analysis_tasks(book_id, state, cursor, total, message, updated_at) "
             "VALUES(?,?,?,?,?,?) ON CONFLICT(book_id) DO UPDATE SET state='running', "
             "total=excluded.total, message='', updated_at=excluded.updated_at",
             (book_id, "running", 0, total, "", now_iso()),
         )
+        if stale:
+            # 游标回退到第一个待重抽章节（已暂停在中途则保留更小的游标）
+            self.db.execute(
+                "UPDATE analysis_tasks SET cursor=MIN(cursor, ?) WHERE book_id=?",
+                (stale[0], book_id),
+            )
         return self.status(book_id)
+
+    def _stale_heuristic_chapters(self, book_id: str) -> list[int]:
+        """返回需要重抽的离线章节序号（仅当模型可用且当前没有正在跑的任务）。"""
+        if isinstance(self.gateway.extract, EchoProvider):
+            return []
+        if self._task_state(book_id) == "running":
+            return []
+        rows = self.db.query(
+            "SELECT chapter_idx, payload FROM chapter_facts WHERE book_id=? ORDER BY chapter_idx",
+            (book_id,),
+        )
+        stale: list[int] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if payload.get("source") == "heuristic":
+                stale.append(int(row["chapter_idx"]))
+        return stale
+
+    def _reset_chapters(self, book_id: str, chapter_idxs: list[int]) -> None:
+        """清掉离线章节的事实与派生结果，重抽时不会留下重复的事件/摘要。"""
+        with self.db.tx() as conn:
+            for idx in chapter_idxs:
+                for table in ("chapter_facts", "fact_rejects", "events", "chapter_summaries"):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE book_id=? AND chapter_idx=?", (book_id, idx)
+                    )
+                conn.execute(
+                    "UPDATE chapter_coverage SET state='pending', errors=0 "
+                    "WHERE book_id=? AND chapter_idx=?",
+                    (book_id, idx),
+                )
 
     def pause(self, book_id: str) -> dict:
         self.db.execute(
@@ -137,6 +191,44 @@ class Pipeline:
         )
         return self.status(book_id)
 
+    def rebuild(self, book_id: str) -> dict:
+        """清空这本书的全部抽取产物，从第一章重跑（换抽取模型/关系图重建用）。
+
+        关系只能由章节事实派生，所以重建必须连 ``chapter_facts`` 一起清掉；
+        原文、分章与段落向量保留，重建期间阅读与全文检索不受影响。
+        """
+        total = int(
+            self.db.query_one("SELECT COUNT(*) AS c FROM chapters WHERE book_id=?", (book_id,))["c"]
+        )
+        with self.db.tx() as conn:
+            for table in (
+                "chapter_facts",
+                "fact_rejects",
+                "chapter_summaries",
+                "events",
+                "relations",
+                "entity_aliases",
+                "entities",
+                "resolution_audit",
+            ):
+                conn.execute(f"DELETE FROM {table} WHERE book_id=?", (book_id,))
+            # 覆盖度不能删：总量要保持在 N 章，否则刚重建时进度会瞬间显示 100%。
+            conn.execute(
+                "UPDATE chapter_coverage SET state='pending', errors=0 WHERE book_id=?", (book_id,)
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO chapter_coverage(book_id, chapter_idx, state, errors, updated_at) "
+                "SELECT book_id, idx, 'pending', 0, ? FROM chapters WHERE book_id=?",
+                (now_iso(), book_id),
+            )
+            conn.execute(
+                "INSERT INTO analysis_tasks(book_id, state, cursor, total, message, updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(book_id) DO UPDATE SET state='running', "
+                "cursor=0, total=excluded.total, message='', updated_at=excluded.updated_at",
+                (book_id, "running", 0, total, "", now_iso()),
+            )
+        return self.status(book_id)
+
     # ------------------------------------------------------------ 主循环
 
     def run(self, book_id: str, *, max_chapters: int | None = None) -> RunReport:
@@ -150,35 +242,13 @@ class Pipeline:
         ner = self._ner(book_id, chapters)
         self._register_alias_entities(book_id, ner)
 
-        processed = 0
-        for chapter in chapters:
-            if chapter.idx < task["cursor"]:
-                continue
-            state = self._task_state(book_id)
-            if state not in ("running",):
-                report.state = state
-                break
-            if max_chapters is not None and processed >= max_chapters:
-                break
-
-            if fact_store.has_fact(self.db, book_id, chapter.idx, chapter.fp):
-                fact_store.set_coverage(self.db, book_id, chapter.idx, "done")
-                report.skipped += 1
-                self._advance(book_id, chapter.idx + 1)
-                continue
-
-            try:
-                self._process_chapter(book_id, chapter, ner)
-                report.processed += 1
-            except Exception as exc:  # noqa: BLE001 - 单章失败不中断
-                report.failed += 1
-                report.errors.append({"chapter_idx": chapter.idx, "error": str(exc)})
-                fact_store.set_coverage(self.db, book_id, chapter.idx, "failed", errors=1)
-                fact_store.add_reject(
-                    self.db, book_id, chapter.idx, "chapter", "pipeline_error", {"error": str(exc)}
-                )
-            processed += 1
-            self._advance(book_id, chapter.idx + 1)
+        concurrency = max(1, int(getattr(self.settings, "extract_concurrency", 1) or 1))
+        if concurrency > 1:
+            self._run_pipelined(
+                book_id, chapters, ner, report, task["cursor"], max_chapters, concurrency
+            )
+        else:
+            self._run_sequential(book_id, chapters, ner, report, task["cursor"], max_chapters)
 
         # 收尾判定
         logger.info("book %s: processed=%d skipped=%d failed=%d", book_id, report.processed, report.skipped, report.failed)
@@ -194,22 +264,162 @@ class Pipeline:
         report.cursor = self.status(book_id)["cursor"]
         return report
 
-    def _process_chapter(self, book_id: str, chapter: Chapter, ner: NerResult) -> None:
-        fact_store.set_coverage(self.db, book_id, chapter.idx, "running")
+    def _run_sequential(
+        self,
+        book_id: str,
+        chapters: list[Chapter],
+        ner: NerResult,
+        report: RunReport,
+        start_cursor: int,
+        max_chapters: int | None,
+    ) -> None:
+        processed = 0
+        for chapter in chapters:
+            if chapter.idx < start_cursor:
+                continue
+            state = self._task_state(book_id)
+            if state not in ("running",):
+                report.state = state
+                break
+            if max_chapters is not None and processed >= max_chapters:
+                break
+
+            processed += self._step(book_id, chapter, ner, report)
+            self._advance(book_id, chapter.idx + 1)
+
+    def _run_pipelined(
+        self,
+        book_id: str,
+        chapters: list[Chapter],
+        ner: NerResult,
+        report: RunReport,
+        start_cursor: int,
+        max_chapters: int | None,
+        concurrency: int,
+    ) -> None:
+        """LLM 抽取按窗口并发，校验/归一/落库仍按章节顺序串行。
+
+        并发只覆盖「纯 LLM 调用」这一段，数据库读写与实体/关系推导保持单线程顺序，
+        因此关系区间、别名合并等语义与串行版本一致。代价是排队靠后的章节在构建
+        上下文时可能少一章刚抽完的摘要，换来数倍吞吐。
+        """
+        queue = deque(ch for ch in chapters if ch.idx >= start_cursor)
+        pending: deque[tuple[Chapter, list[Paragraph], int, object]] = deque()
+        processed = 0
+        stopped = False
+        executor = ThreadPoolExecutor(
+            max_workers=concurrency, thread_name_prefix=f"extract-{book_id[:6]}"
+        )
+        try:
+            while not stopped:
+                while queue and len(pending) < concurrency:
+                    if self._task_state(book_id) != "running":
+                        stopped = True
+                        break
+                    if max_chapters is not None and processed + len(pending) >= max_chapters:
+                        break
+                    chapter = queue.popleft()
+                    if fact_store.has_fact(self.db, book_id, chapter.idx, chapter.fp):
+                        fact_store.set_coverage(self.db, book_id, chapter.idx, "done")
+                        report.skipped += 1
+                        self._advance(book_id, chapter.idx + 1)
+                        continue
+                    paragraphs, start_seq, context = self._prepare_chapter(book_id, chapter, ner)
+                    future = executor.submit(
+                        self._extract_chapter, chapter, context, paragraphs, ner
+                    )
+                    pending.append((chapter, paragraphs, start_seq, future))
+
+                if stopped or not pending:
+                    break
+
+                chapter, paragraphs, start_seq, future = pending.popleft()
+                state = self._task_state(book_id)
+                if state != "running":
+                    # 暂停：丢弃预取结果，游标停在最后完成的章节，恢复后会重抽
+                    report.state = state
+                    break
+                fact_store.set_coverage(self.db, book_id, chapter.idx, "running")
+                try:
+                    outcome = future.result()
+                    self._apply_chapter(book_id, chapter, paragraphs, start_seq, outcome)
+                    report.processed += 1
+                except Exception as exc:  # noqa: BLE001 - 单章失败不中断
+                    self._record_failure(book_id, chapter.idx, exc, report)
+                processed += 1
+                self._advance(book_id, chapter.idx + 1)
+                if max_chapters is not None and processed >= max_chapters:
+                    break
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _step(
+        self,
+        book_id: str,
+        chapter: Chapter,
+        ner: NerResult,
+        report: RunReport,
+    ) -> int:
+        """串行模式下处理一章，返回本步计入的 processed 数（跳过章节为 0）。"""
+        if fact_store.has_fact(self.db, book_id, chapter.idx, chapter.fp):
+            fact_store.set_coverage(self.db, book_id, chapter.idx, "done")
+            report.skipped += 1
+            return 0
+        try:
+            self._process_chapter(book_id, chapter, ner)
+            report.processed += 1
+        except Exception as exc:  # noqa: BLE001 - 单章失败不中断
+            self._record_failure(book_id, chapter.idx, exc, report)
+        return 1
+
+    def _record_failure(
+        self, book_id: str, chapter_idx: int, exc: Exception, report: RunReport
+    ) -> None:
+        report.failed += 1
+        report.errors.append({"chapter_idx": chapter_idx, "error": str(exc)})
+        fact_store.set_coverage(self.db, book_id, chapter_idx, "failed", errors=1)
+        fact_store.add_reject(
+            self.db, book_id, chapter_idx, "chapter", "pipeline_error", {"error": str(exc)}
+        )
+
+    def _prepare_chapter(
+        self, book_id: str, chapter: Chapter, ner: NerResult
+    ) -> tuple[list[Paragraph], int, str]:
+        """在主线程读库，供后台线程只做纯 LLM 调用。"""
         paragraphs: list[Paragraph] = paragraphs_of_chapter(self.db, book_id, chapter.idx)
         start_seq = chapter_start_seq(self.db, book_id, chapter.idx)
         context = build_extraction_context(
             self.db, book_id, chapter, dictionary=ner.dictionary()
         )
+        return paragraphs, start_seq, context
 
-        extractor = ChapterFactExtractor(self.gateway)
-        outcome = extractor.extract(
+    def _extract_chapter(
+        self,
+        chapter: Chapter,
+        context: str,
+        paragraphs: list[Paragraph],
+        ner: NerResult,
+    ):
+        """仅做 LLM 抽取（不碰数据库），可在工作线程中并发执行。"""
+        extractor = ChapterFactExtractor(
+            self.gateway, segment_chars=self.settings.extract_segment_chars
+        )
+        return extractor.extract(
             chapter,
             context=context,
             paragraphs=paragraphs,
             dictionary=ner.dictionary(),
             alias_map=ner.alias_map(),
         )
+
+    def _apply_chapter(
+        self,
+        book_id: str,
+        chapter: Chapter,
+        paragraphs: list[Paragraph],
+        start_seq: int,
+        outcome,
+    ) -> None:
         fact: ChapterFact = outcome.fact
 
         fact, _report = validate(
@@ -243,6 +453,12 @@ class Pipeline:
             chapter_idx=chapter.idx,
             batch=self.settings.embedding_batch,
         )
+
+    def _process_chapter(self, book_id: str, chapter: Chapter, ner: NerResult) -> None:
+        fact_store.set_coverage(self.db, book_id, chapter.idx, "running")
+        paragraphs, start_seq, context = self._prepare_chapter(book_id, chapter, ner)
+        outcome = self._extract_chapter(chapter, context, paragraphs, ner)
+        self._apply_chapter(book_id, chapter, paragraphs, start_seq, outcome)
 
     # ------------------------------------------------------------ 辅助
 

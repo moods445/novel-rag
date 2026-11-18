@@ -24,6 +24,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def mask_api_key(api_key: str) -> str:
+    """给界面看的脱敏提示（只露首尾，绝不回显完整 key）。"""
+    text = str(api_key or "")
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}…{text[-4:]}"
+
+
 @dataclass(slots=True)
 class ProviderSpec:
     name: str
@@ -41,6 +51,8 @@ class ProviderSpec:
             "base_url": self.base_url,
             "models": self.models,
             "has_key": bool(self.api_key),
+            # 只回显脱敏提示：编辑时能看出「Key 还在」，但永远不会把完整 key 发给前端
+            "api_key_hint": mask_api_key(self.api_key),
             "custom": self.custom,
         }
 

@@ -33,7 +33,12 @@ FREE_TEXT: dict[str, int] = {
     # 界面添加的 provider（JSON 列表，含 api_key，仅存本地库）
     "custom_providers": 20000,
 }
-ALLOWED = set(ENUMS) | set(FREE_TEXT)
+# 整数设置：键 -> (最小值, 最大值)
+INT_KEYS: dict[str, tuple[int, int]] = {
+    # 单次抽取的原文目标长度；上限与 MAX_CHAPTER_CHARS 对齐，避免被截断
+    "extract_segment_chars": (500, 12000),
+}
+ALLOWED = set(ENUMS) | set(FREE_TEXT) | set(INT_KEYS)
 
 
 class SettingsStore:
@@ -61,6 +66,15 @@ class SettingsStore:
                 raise InvalidInput(f"{key} 只能是 {sorted(ENUMS[key])}")
             if key in FREE_TEXT and len(text) > FREE_TEXT[key]:
                 raise InvalidInput(f"{key} 过长")
+            if key in INT_KEYS:
+                try:
+                    number = int(text)
+                except ValueError:
+                    raise InvalidInput(f"{key} 必须是整数") from None
+                low, high = INT_KEYS[key]
+                if not low <= number <= high:
+                    raise InvalidInput(f"{key} 必须在 {low}–{high} 之间")
+                text = str(number)
             cleaned[key] = text
 
         with self.db.tx() as conn:
@@ -87,7 +101,7 @@ class SettingsStore:
                 setattr(settings, key, getattr(defaults, key))
         for key, value in overrides.items():
             if hasattr(settings, key):
-                setattr(settings, key, value)
+                setattr(settings, key, int(value) if key in INT_KEYS else value)
         self._applied = set(overrides)
         return settings
 
@@ -116,6 +130,7 @@ class SettingsStore:
                 "embedding_variant": settings.embedding_variant,
                 "embedding_endpoint": settings.embedding_endpoint,
                 "network_proxy": settings.network_proxy,
+                "extract_segment_chars": settings.extract_segment_chars,
             },
             "overrides": overrides,
             "options": {

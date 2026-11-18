@@ -24,7 +24,7 @@ backend/
     llm/       provider 网关（应用内 provider 解析）、BGE embedding
     settings_store.py / embedding_models.py  界面可改设置、模型下载
   scripts/     fetch_embedding_model.py
-  tests/       107 个 unittest
+  tests/       165 个 unittest
 ```
 
 ```
@@ -130,6 +130,8 @@ docker compose pull && docker compose up -d
 | `NOVEL_RAG_PROXY` | 下载模型 / 调 LLM 走的代理 |
 | `NOVEL_RAG_QUERY_{BASE_URL,API_KEY,MODEL}` | 问答模型（OpenAI 兼容）。也可以不改环境变量，直接在设置页「添加 provider」，效果一样；**两边都没有就只能返回原文摘录** |
 | `NOVEL_RAG_EXTRACT_{BASE_URL,API_KEY,MODEL}` | 抽取模型；不配时建议与查询用同一个端点 |
+| `NOVEL_RAG_EXTRACT_CONCURRENCY` | 章节抽取并发数，默认 3（云端可调大提速，本地 Ollama 建议 1） |
+| `NOVEL_RAG_EXTRACT_SEGMENT_CHARS` | 单次抽取的原文目标长度，默认 5000 字（设置页「抽取分段」可改） |
 | `NOVEL_RAG_LLM_TIMEOUT` / `_QUERY` | 抽取 / 问答请求超时（秒），默认 240 / 120 |
 | `NOVEL_RAG_LOG_LEVEL` | 日志级别（页面「日志」读取 `/data/logs/backend.log`） |
 
@@ -246,8 +248,8 @@ python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 | GET/PUT/DELETE | `/api/settings` | 切换 NER / 分章 / embedding / LLM（PUT 后组件热重建，无需重启） |
 | GET | `/api/models` | 可选项清单（含各模型是否已安装） |
 | GET/POST | `/api/models/embedding/download` | 模型下载状态 / 触发下载（可带 `endpoint`） |
-| GET/POST | `/api/providers` | 合并后的 provider 清单 / 添加或更新自定义 provider |
-| DELETE | `/api/providers/{name}` | 删除自定义 provider |
+| GET/POST | `/api/providers` | 合并后的 provider 清单 / 添加或覆盖自定义 provider |
+| GET/PUT/DELETE | `/api/providers/{name}` | 单个 provider 详情（Key 只回显脱敏提示）/ 修改（可改名、增删模型、清 Key）/ 删除 |
 | PUT | `/api/books/{id}/chapters/{idx}` | 人工修改章节标题 |
 | POST | `/api/books/{id}/resplit` | 用正则重新分章（会作废旧知识，返回失效清单） |
 | GET | `/api/books/{id}/epub` | 生成 EPUB 供 foliate-js 渲染 |
@@ -271,6 +273,8 @@ python3 backend/scripts/fetch_embedding_model.py --proxy http://127.0.0.1:7890
 | `NOVEL_RAG_NER_BACKEND` | `auto` / `jieba` / `regex` |
 | `NOVEL_RAG_SPLIT_BACKEND` | `auto` / `rule` / `llm` |
 | `NOVEL_RAG_EMBED_BACKEND` / `_DIR` / `_VARIANT` | `auto` / `bge` / `hash`，模型目录，`fp32`/`int8` |
+| `NOVEL_RAG_EXTRACT_CONCURRENCY` | 章节抽取并发数（默认 3）：抽取耗时几乎全在 LLM 调用，调大可近似线性提速；本地 Ollama 建议 1 |
+| `NOVEL_RAG_EXTRACT_SEGMENT_CHARS` | 单次抽取的原文目标长度（默认 5000 字）：段数 `ceil(总字数/该值)` 后均分，避免尾段过短 |
 | `NOVEL_RAG_LLM_TIMEOUT` | 抽取超时（默认 240s），查询单独 120s |
 | `NOVEL_RAG_CONTEXT_BUDGET` | ContextCompiler 上下文预算（字符） |
 

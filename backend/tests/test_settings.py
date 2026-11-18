@@ -299,6 +299,24 @@ class SettingsStoreTest(unittest.TestCase):
         self.assertIn("embedding_endpoint", described["options"])
         self.assertIn("network_proxy", described["values"])
 
+    def test_segment_chars_is_int_and_range_checked(self) -> None:
+        self.store.update({"extract_segment_chars": "4000"})
+        applied = self.store.apply(self.settings)
+        self.assertEqual(applied.extract_segment_chars, 4000)
+        self.assertIsInstance(applied.extract_segment_chars, int)
+
+        with self.assertRaises(InvalidInput):
+            self.store.update({"extract_segment_chars": "abc"})
+        with self.assertRaises(InvalidInput):
+            self.store.update({"extract_segment_chars": "99999"})
+
+        self.store.update({"extract_segment_chars": ""})
+        self.assertNotIn("extract_segment_chars", self.store.get_all())
+        self.store.apply(self.settings)
+        self.assertEqual(
+            self.settings.extract_segment_chars, Settings().extract_segment_chars
+        )
+
     def test_network_settings_are_stored(self) -> None:
         self.store.update(
             {"network_proxy": "http://127.0.0.1:7890", "embedding_endpoint": "https://hf-mirror.com"}
@@ -334,6 +352,127 @@ class SettingsStoreTest(unittest.TestCase):
     def test_provider_rejects_bad_base_url(self) -> None:
         with self.assertRaises(InvalidInput):
             self.app.save_provider({"name": "bad", "base_url": "ftp://x"})
+
+
+class ProviderCrudTest(unittest.TestCase):
+    """provider 的「查 / 改 / 改名 / 清 Key」必须和「增删」一样可用。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings = Settings(home=Path(self._tmp.name), embedding_backend="hash")
+        self.app = build_app(
+            settings=self.settings, db_path=str(Path(self._tmp.name) / "crud.db")
+        )
+
+    def tearDown(self) -> None:
+        self.app.db.close()
+        self._tmp.cleanup()
+
+    def _add(self, **overrides) -> dict:
+        body = {
+            "name": "my-api",
+            "label": "我的 API",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-abcdef123456",
+            "models": "m1, m2",
+        }
+        body.update(overrides)
+        return self.app.save_provider(body)
+
+    def test_get_single_provider_masks_key(self) -> None:
+        self._add()
+        detail = self.app.provider_payload("my-api")
+        provider = detail["provider"]
+        self.assertEqual(provider["models"], ["m1", "m2"])
+        self.assertTrue(provider["has_key"])
+        self.assertEqual(provider["api_key_hint"], "sk-a…3456")
+        self.assertNotIn("sk-abcdef123456", json.dumps(detail, ensure_ascii=False))
+
+        with self.assertRaises(NotFound):
+            self.app.provider_payload("ghost")
+
+    def test_update_keeps_key_and_custom_label(self) -> None:
+        self._add()
+        self.app.update_provider(
+            "my-api",
+            {"base_url": "https://api2.example.com/v1/", "models": ["m2", "m3"]},
+        )
+        provider = self.app.provider_payload("my-api")["provider"]
+        self.assertEqual(provider["base_url"], "https://api2.example.com/v1")
+        self.assertEqual(provider["models"], ["m2", "m3"])
+        self.assertTrue(provider["has_key"])
+        self.assertEqual(provider["label"], "我的 API")
+
+    def test_update_switches_stale_selected_model(self) -> None:
+        self._add()
+        self.assertEqual(self.settings.llm_provider, "my-api")
+        self.assertEqual(self.settings.llm_model, "m1")
+
+        self.app.update_provider("my-api", {"models": "m3, m4"})
+        self.assertEqual(self.settings.llm_provider, "my-api")
+        self.assertEqual(self.settings.llm_model, "m3")
+
+    def test_update_can_rename_and_selection_follows(self) -> None:
+        self._add()
+        result = self.app.update_provider("my-api", {"name": "renamed"})
+        names = [p["name"] for p in result["providers"]]
+        self.assertIn("renamed", names)
+        self.assertNotIn("my-api", names)
+        self.assertEqual(self.settings.llm_provider, "renamed")
+        self.assertEqual(self.settings.llm_model, "m1")
+
+    def test_update_rejects_duplicate_name(self) -> None:
+        self._add()
+        self._add(name="other", models="x1")
+        with self.assertRaises(InvalidInput):
+            self.app.update_provider("my-api", {"name": "other"})
+        # 冲突时不能只改一半
+        names = [p["name"] for p in self.app.providers_payload()["providers"]]
+        self.assertIn("my-api", names)
+
+    def test_update_clears_key_when_explicitly_empty(self) -> None:
+        self._add()
+        self.app.update_provider("my-api", {"api_key": ""})
+        provider = self.app.provider_payload("my-api")["provider"]
+        self.assertFalse(provider["has_key"])
+        self.assertEqual(provider["api_key_hint"], "")
+
+    def test_update_rejects_bad_base_url_without_partial_write(self) -> None:
+        self._add()
+        with self.assertRaises(InvalidInput):
+            self.app.update_provider("my-api", {"base_url": "ftp://api.example.com/v1"})
+        provider = self.app.provider_payload("my-api")["provider"]
+        self.assertEqual(provider["base_url"], "https://api.example.com/v1")
+
+    def test_models_are_deduplicated_and_accept_chinese_comma(self) -> None:
+        self._add(models="m1，m1, m2\nm2")
+        provider = self.app.provider_payload("my-api")["provider"]
+        self.assertEqual(provider["models"], ["m1", "m2"])
+
+    def test_update_missing_provider_is_404(self) -> None:
+        with self.assertRaises(NotFound):
+            self.app.update_provider("ghost", {"base_url": "https://x.example.com/v1"})
+
+
+class ReadOnlyProviderTest(unittest.TestCase):
+    """本地测试配置里的 provider 只读：改/删都必须报告，而不是偷偷写进数据库。"""
+
+    def test_local_config_provider_cannot_be_updated_or_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opencode.json"
+            path.write_text(OPENCODE_JSONC, encoding="utf-8")
+            settings = Settings(
+                home=Path(tmp), embedding_backend="hash", opencode_config=str(path)
+            )
+            app = build_app(settings=settings, db_path=str(Path(tmp) / "ro.db"))
+            try:
+                with self.assertRaises(InvalidInput):
+                    app.update_provider("magpie", {"base_url": "http://127.0.0.1:9/v1"})
+                with self.assertRaises(InvalidInput):
+                    app.delete_provider("magpie")
+                self.assertIn("magpie", app.provider_payload("magpie")["provider"]["name"])
+            finally:
+                app.db.close()
 
 
 class EmbeddingEndpointTest(unittest.TestCase):

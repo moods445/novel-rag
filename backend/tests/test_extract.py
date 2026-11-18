@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from novel_rag.extract.extractor import parse_json_object
+from novel_rag.extract.extractor import parse_json_object, split_segments
 from novel_rag.extract.prescan import dictionary_from, scan_names
 
 from .fixtures import SAMPLE_TEXT
@@ -36,6 +36,34 @@ class PrescanTest(unittest.TestCase):
         names = dictionary_from("他们说。他们说道。我们问道。")
         self.assertNotIn("他们", names)
         self.assertNotIn("我们", names)
+
+
+class SegmentTest(unittest.TestCase):
+    """分段数向上取整后均分，尾段不能只剩十几个字。"""
+
+    def test_short_body_is_single_segment(self) -> None:
+        self.assertEqual(split_segments("x" * 5000, 5000), ["x" * 5000])
+
+    def test_even_split_at_multiple(self) -> None:
+        body = "\n".join(["abc"] * 2500)  # 9999 字
+        segments = split_segments(body, 5000)
+        self.assertEqual(len(segments), 2)
+        self.assertLessEqual(abs(len(segments[0]) - len(segments[1])), 1)
+
+    def test_ceil_count_and_even_share(self) -> None:
+        """s=10001, n=5000 → a=3, b=3334；不能是 5000+5000+1。"""
+        body = "x" * 10001
+        segments = split_segments(body, 5000)
+        self.assertEqual(len(segments), 3)
+        self.assertEqual([len(s) for s in segments], [3334, 3334, 3333])
+        self.assertEqual("".join(segments), body)
+
+    def test_line_boundaries_are_preserved(self) -> None:
+        body = "\n".join(["第%d段正文内容。" % i for i in range(600)] + ["尾巴"])
+        segments = split_segments(body, 5000)
+        self.assertGreaterEqual(len(segments), 2)
+        self.assertGreater(min(len(s) for s in segments), 2000)
+        self.assertEqual("".join(segments), body)
 
 
 class JsonParseTest(unittest.TestCase):

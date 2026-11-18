@@ -21,6 +21,7 @@
   --reader-hint: #8b98ad;
   --bubble-user-bg: #145c53;
   --bubble-user-text: #e6ebf3;
+  --graph-line: #7f8ca3;
 }
 
 html[data-theme="light"] {
@@ -45,6 +46,7 @@ html[data-theme="light"] {
   --reader-hint: #4b5563;
   --bubble-user-bg: #d7efe9;
   --bubble-user-text: #0f3d38;
+  --graph-line: #b6c1d3;
 }
 
 * {
@@ -589,16 +591,78 @@ main {
 
 /* ---------------------------------------------------------------- 分析 */
 
-.analysis-grid,
-.settings-grid {
+.analysis-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
 
-.settings-grid {
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+/* 设置：左侧子功能导航，右侧只显示选中的配置面板 */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  position: sticky;
+  top: 0;
+}
+
+.settings-tab {
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-tab:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.settings-tab.active {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-body {
+  min-width: 0;
+}
+
+.settings-panel {
+  display: none;
+}
+
+.settings-panel.active {
+  display: block;
+}
+
+@media (max-width: 760px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    position: static;
+  }
 }
 
 .panel {
@@ -718,6 +782,46 @@ main {
 
 .list li .dim {
   color: var(--muted);
+}
+
+/* provider 列表：左边信息、右边操作，模型名单独一行避免撑破 */
+.provider-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-item-head strong {
+  font-weight: 600;
+}
+
+.provider-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.provider-item-actions .btn {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.provider-item-meta,
+.provider-item-models {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.provider-item-models {
+  color: var(--list-text);
+  opacity: 0.85;
 }
 
 .model-row {
@@ -924,5 +1028,490 @@ main {
 
 .log-line.debug {
   opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------- 关系图页 */
+
+.graph-grid {
+  display: grid;
+  /* 左侧固定宽度的设置栏，右侧关系网络吃满剩余空间；两栏等高并铺满视图区 */
+  grid-template-columns: 316px minmax(0, 1fr);
+  gap: 18px;
+  height: calc(100vh - 137px);
+  min-height: 560px;
+  align-items: stretch;
+}
+
+.graph-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.graph-sidebar .panel {
+  flex: 0 0 auto;
+  padding: 15px 16px 17px;
+}
+
+/* 云图设置卡片吃掉剩余高度，根人物列表跟着伸缩 */
+.graph-sidebar .panel.graph-setup {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.graph-setup {
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-network {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 14px 16px 14px;
+}
+
+/* 卡片标题统一加一条细线，让「设置栏 / 画布」的分区更清楚 */
+.graph-sidebar .panel-head,
+.graph-network > .panel-head {
+  padding-bottom: 9px;
+  margin-bottom: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+@media (max-width: 1080px) {
+  .graph-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    align-items: start;
+  }
+
+  .graph-sidebar {
+    order: 2;
+  }
+
+  .graph-sidebar .panel.graph-setup {
+    flex: 0 0 auto;
+  }
+
+  .graph-canvas {
+    flex: none;
+    height: 62vh;
+  }
+
+  .root-list {
+    flex: none;
+  }
+}
+
+/* ---- 设置栏 ---- */
+
+.graph-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.graph-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.graph-field .input {
+  width: 92px;
+  text-align: center;
+}
+
+.graph-toggle {
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.graph-toggle input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.graph-toggle strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.graph-toggle small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-subhead {
+  margin: 12px 0 8px;
+}
+
+.graph-tip {
+  margin: 7px 0 0;
+  line-height: 1.5;
+}
+
+/* 根人物选择器：已选胶囊 + 搜索框 + 可点击的人物列表 */
+.root-picker {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.root-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.root-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  appearance: none;
+  padding: 2px 9px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.root-chip:hover {
+  border-color: var(--accent);
+}
+
+.root-chip-x {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.root-chips .root-empty {
+  padding: 0;
+  font-size: 11.5px;
+}
+
+.root-search {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.root-list {
+  flex: 1 1 auto;
+  min-height: 72px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.root-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.root-row:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.root-row.is-root {
+  background: rgba(45, 212, 191, 0.16);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.root-check {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.root-row.is-root .root-check {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px rgba(10, 16, 20, 0.35);
+}
+
+/* 自动选中的根人物：虚线勾选框 + 浅底，提示「没手动选，先这样展示」 */
+.root-row.is-auto {
+  background: rgba(45, 212, 191, 0.07);
+  font-weight: 400;
+}
+
+.root-row.is-auto .root-check {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: transparent;
+  box-shadow: none;
+}
+
+.root-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.root-degree {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.root-empty,
+.root-more {
+  display: block;
+  padding: 8px;
+}
+
+/* 图例做成小胶囊，和画布里的云团呼应 */
+.graph-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.graph-head-right .graph-legend {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 面板标题里的小按钮：不要继承 head 的大写与字距 */
+.btn-mini {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.graph-legend {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.graph-detail {
+  margin: 8px 2px 0;
+  min-height: 16px;
+}
+
+.graph-canvas {
+  position: relative;
+  flex: 1 1 auto; /* 高度由左侧设置栏撑出来的行高决定，两栏底部对齐 */
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  /* 淡淡的径向光晕，让节点像浮在云里 */
+  background:
+    radial-gradient(circle at 50% 42%, rgba(45, 212, 191, 0.08), transparent 66%),
+    var(--panel-2);
+}
+
+/* relation-graph 的根节点自己占满容器（尺寸由父元素决定） */
+.graph-canvas > .relation-graph {
+  width: 100%;
+  height: 100%;
+}
+
+.graph-canvas .hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 20px;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- 云图（relation-graph） */
+
+/* 节点背景由气泡自己画，去掉组件默认的方块/边框 */
+.graph-canvas .rel-node.cloud-node {
+  position: relative;
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0;
+}
+
+/* 组件内部还有一层无类名的内容容器（高度会被内容压扁），
+   把气泡改成绝对定位铺满节点方框，气泡才是正圆；内容容器本身不拦点击 */
+.graph-canvas .rel-node.cloud-node > div {
+  pointer-events: none;
+}
+
+.graph-canvas .cloud-bubble {
+  --cloud: 139, 152, 173;
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  text-align: center;
+  line-height: 1.15;
+  color: var(--text);
+  background: radial-gradient(
+    circle at 34% 28%,
+    rgba(var(--cloud), 0.42),
+    rgba(var(--cloud), 0.1) 72%
+  );
+  border: 1px solid rgba(var(--cloud), 0.55);
+  box-shadow:
+    0 0 0 4px rgba(var(--cloud), 0.06),
+    0 10px 26px rgba(var(--cloud), 0.16),
+    inset 0 0 18px rgba(var(--cloud), 0.12);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  user-select: none;
+}
+
+.graph-canvas .cloud-bubble:hover {
+  transform: scale(1.06);
+  box-shadow:
+    0 0 0 6px rgba(var(--cloud), 0.1),
+    0 14px 30px rgba(var(--cloud), 0.28);
+}
+
+.graph-canvas .cloud-bubble.kind-person {
+  --cloud: 45, 212, 191;
+}
+
+/* 孤立人物：与根人物不连通，用虚线圈区分，并压暗一点 */
+.graph-canvas .cloud-isolated .cloud-bubble {
+  opacity: 0.75;
+  border: 1px dashed rgba(var(--cloud), 0.55);
+}
+
+/* 下探补进来的人物：加一圈琥珀色光晕，和按上限选出来的人区分开 */
+.graph-canvas .cloud-drilled .cloud-bubble {
+  box-shadow:
+    0 0 0 3px rgba(251, 191, 36, 0.16),
+    0 10px 26px rgba(251, 191, 36, 0.2);
+}
+
+.graph-canvas .cloud-bubble.kind-place {
+  --cloud: 96, 165, 250;
+}
+
+.graph-canvas .cloud-bubble.kind-org {
+  --cloud: 251, 191, 36;
+}
+
+.graph-canvas .cloud-bubble.kind-item {
+  --cloud: 167, 139, 250;
+}
+
+.graph-canvas .cloud-bubble.kind-other {
+  --cloud: 139, 152, 173;
+}
+
+.graph-canvas .cloud-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-width: 70%;
+  overflow: hidden;
+  word-break: break-all;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.graph-canvas .cloud-degree {
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgba(var(--cloud), 0.8);
+  color: rgba(4, 14, 20, 0.92);
+}
+
+/* 气泡右下角的「＋」：展开这个人物的一跳关系人；展开后变成「−」可收起 */
+.graph-canvas .cloud-drill {
+  position: absolute;
+  right: 12%;
+  bottom: 12%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(var(--cloud), 0.7);
+  border-radius: 50%;
+  background: rgba(10, 16, 22, 0.72);
+  color: rgba(var(--cloud), 0.95);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.graph-canvas .cloud-drill:hover,
+.graph-canvas .cloud-drill:focus-visible {
+  opacity: 1;
+  transform: scale(1.12);
+  background: rgba(var(--cloud), 0.9);
+  color: rgba(4, 14, 20, 0.95);
+}
+
+.graph-canvas .cloud-drill.is-open {
+  opacity: 1;
+  border-style: dashed;
+}
+
+/* 连线：颜色走 CSS 变量，明暗主题切换时不用重画（组件是内联 stroke，所以要 !important） */
+.graph-canvas .cloud-line {
+  stroke: var(--graph-line) !important;
+}
+
+.graph-canvas .cloud-line.c-rg-line-checked {
+  stroke: var(--accent) !important;
 }
 
